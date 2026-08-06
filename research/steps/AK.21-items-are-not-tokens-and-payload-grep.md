@@ -464,3 +464,355 @@ RETRACTED trong buoc nay
   Slot +0xE0 khong thuoc token-resolution path      (da rut o AK.20.1, xac nhan lai)
   Ke hoach AK.20B dung dps @rsp de tim slot vtable  (thua, muc 0)
 ```
+
+---
+
+## 13. AK.21.1 — Kết quả sau phép đo: raw grep âm tính, XOR token và cache lineage
+
+Phần này là phụ lục hậu nghiệm của AK.21. Các kết luận tại đây **supersede** những giả thuyết đặt trước ở §4, §5, §6 và thứ tự ưu tiên cũ ở §12. Không xoá kết luận cũ; mọi điểm sai được đánh dấu RETRACTED ngay dưới phép đo đã bác nó.
+
+### 13.1 CONFIRMED — raw body của `0x060008E1` không nằm nguyên văn trong payload
+
+Bốn phép grep trên `pl_full.bin` đều trả về 0 hit:
+
+```text
+junk_call:    count=0    # 28 7D B9 39 5F
+suffix19:     count=0    # 19-byte runtime suffix
+virtual_tail: count=0    # tail chứa KEY 4..6
+full_body_2d: count=0    # full runtime body 0x2D
+```
+
+Cũng không tìm thấy raw literal `mask` hay ba masked-real token đã biết trong các artifact tĩnh:
+
+```text
+0x6A714B62  mask
+0x6E71C38F  KEY1 masked-real
+0x6B714FAB  KEY2 masked-real
+0x607156FB  KEY3 masked-real candidate
+```
+
+Các file đã quét:
+
+```text
+pl_full.bin       size 0x346C10
+s2.bin            size 0x185E08
+md_full.bin       size 0x1E06E8
+LordsMobileBot.exe size 0x0D390628
+```
+
+Phán quyết:
+
+```text
+CONFIRMED: Bốn byte-string của body runtime mẫu không tồn tại nguyên văn trong pl_full.bin.
+CONFIRMED: Bốn DWORD runtime trên không tồn tại nguyên văn trong bốn artifact đã quét.
+RETRACTED: payload = [header nhỏ + mảng token thật + raw IL body] là STRONG.
+RETRACTED: H1 raw full-body 0x2D và H2 raw suffix 0x19 là hai mô hình lưu trữ còn sống.
+STRONG: payload dùng representation encoded/structured hoặc body được dựng từ nhiều nguồn.
+```
+
+Không mở rộng thành “không method nào có raw IL”; phép đo chỉ kín cho các anchor của method `0x060008E1`.
+
+### 13.2 Census `codeSize`: H1/H2 có candidate nhưng không thể join bằng header runtime
+
+Census sửa lỗi PowerShell alias `H = Get-History` cho kết quả:
+
+```text
+codeSize 0x2D: 71 record, trong đó EH=0 là 69
+codeSize 0x19: 31 record, tất cả EH=0
+```
+
+Không record nào trong hai tập có `maxStack=8`.
+
+```text
+CONFIRMED: bộ lọc codeSize + maxStack=8 + EH=0 là sai.
+RETRACTED: candidate count bằng 0.
+RETRACTED: methods.csv.maxStack phải bằng CORINFO_METHOD_INFO.maxStack của body runtime.
+UNPROVEN: record tương ứng của 0x060008E1 và ý nghĩa 0x2D/0x19 trong record layer.
+```
+
+### 13.3 CONFIRMED — `CORINFO_RESOLVED_TOKEN` được điền bằng block copy 0x38 byte
+
+Tại resolver return, HVM copy chính xác 0x38 byte từ temporary result vào `CORINFO_RESOLVED_TOKEN + 0x18`:
+
+```text
+source      = 0xFD8257AB08
+destination = 0xFD8257ADE8
+count       = 0x38
+capacity    = 0x38
+```
+
+Khối bảy qword tương ứng:
+
+```text
++0x18 hClass
++0x20 hMethod
++0x28 hField
++0x30 pTypeSpec
++0x38 cbTypeSpec + padding
++0x40 pMethodSpec
++0x48 cbMethodSpec + padding
+```
+
+`0x18004759B` chỉ là inner memmove loop; caller `0x1803793A7..0x1803793D0` chuẩn bị source `[rsp+48]` rồi gọi secure-copy wrapper `0x180460E0`.
+
+```text
+RETRACTED: copy length chỉ là 0x28.
+RETRACTED: các write tại 0x18004759B là assignment semantic cho từng handle field.
+```
+
+### 13.4 CONFIRMED — cache resolved handles có khóa `(module, masked-real token)`
+
+Cache node mẫu tại `0x24100668B90`:
+
+```text
++0x00/+0x08/+0x10  tree links
++0x18              module/scope = 0x7FFA74E9E0A0
++0x20              key32        = 0x6E71C38F
++0x28              hClass       = 0x7FFA7500C700
++0x30              hMethod      = 0
++0x38              hField       = 0x7FFA74FC4198
+```
+
+Đường runtime:
+
+```text
+0x1800021B0  lookup cache
+0x1800058A0  insert cache miss result
+```
+
+`0x1800058A0` duyệt cây theo cặp `(module, key32)` và copy triple `hClass/hMethod/hField` vào value của node. Nó không resolve metadata token; việc resolve đã xảy ra trước đó.
+
+```text
+CONFIRMED: đây là cache runtime-handle, không phải map u32 virtual-key → u32 real-token.
+RETRACTED: object 0x24100668B90 có thể đồng nhất với std::map KEY→real token cũ.
+```
+
+### 13.5 CONFIRMED — exact bridge masked-real token → CLR token → CoreCLR handles
+
+Ở cache-miss path, request mutable trước/ sau bridge:
+
+```text
+before:
+  token     = 0x6E71C38F
+  flags     = 0x00000004
+
+after:
+  token     = 0x040088ED
+  flags     = 0x00000004
+  hClass    = 0x7FFA7500C700
+  hMethod   = 0
+  hField    = 0x7FFA74FC4198
+```
+
+Exact writer giải token:
+
+```asm
+0x1803940AC  xor dword ptr [rbx+10h], r9d
+```
+
+Với KEY 1:
+
+```text
+0x6E71C38F XOR 0x6A714B62 = 0x040088ED
+```
+
+Sau XOR, HVM delegate cùng `CORINFO_RESOLVED_TOKEN*` sang object nền tại vtable slot `+0xE0`. Data breakpoint dừng trực tiếp trong:
+
+```text
+coreclr!CEEInfo::resolveToken+0x3A8
+mov [rdi+28h],rax
+```
+
+và ghi `hField = 0x7FFA74FC4198`.
+
+Chuỗi end-to-end cho KEY 1:
+
+```text
+virtual token 0x04800001
+  → real CLR token 0x040088ED đã tồn tại trong resolver state/register
+  → masked-real 0x6E71C38F làm cache key
+  → XOR mask 0x6A714B62 khi cache miss
+  → CLR token 0x040088ED
+  → real CoreCLR CEEInfo::resolveToken
+  → hClass 0x7FFA7500C700 / hField 0x7FFA74FC4198
+```
+
+### 13.6 CONFIRMED — KEY 2 dùng cùng mask
+
+Tại event `11CA3E:1A0`:
+
+```text
+before token = 0x6B714FAB
+mask         = 0x6A714B62
+flags        = 0x00000101
+after token  = 0x010004C9
+```
+
+Phép tính:
+
+```text
+0x6B714FAB XOR 0x6A714B62 = 0x010004C9
+```
+
+Đây đúng là real `TypeRef` token đã biết của KEY 2.
+
+```text
+CONFIRMED: cùng mask dùng cho KEY 1 FieldDef và KEY 2 TypeRef trong transaction này.
+STRONG: flags 0x101 chứa usage/context bits của constrained TypeRef, không chỉ metadata table kind.
+```
+
+### 13.7 RETRACTED — `0x6EF14B63` không phải masked-virtual lookup key
+
+Trong JIT resolver invocation, exact XOR instruction cũng chạy trên raw virtual token:
+
+```text
+0x04800001 XOR 0x6A714B62 = 0x6EF14B63
+```
+
+Nhưng read watchpoint trên slot chứa `0x6EF14B63` không dừng; continuation `0x18003EEE7` thắng trước. Giá trị này không được đọc lại từ slot trước khi helper return.
+
+```text
+RETRACTED: có map 0x6EF14B63 → 0x6E71C38F.
+RETRACTED: 0x6EF14B63 là lookup key semantic.
+STRONG: lần XOR raw virtual token là mutation/scrub của temporary request ở đường khác với cache-miss decode.
+```
+
+### 13.8 CONFIRMED — raw virtual token bị ghi đè trực tiếp bằng masked-real token trước cache lookup
+
+Slot source ban đầu chứa `0x04800001`, rồi exact writer:
+
+```asm
+0x18037928E  mov dword ptr [rsp+150h],r8d
+```
+
+ghi:
+
+```text
+R8D  = 0x6E71C38F
+R14D = 0x040088ED
+```
+
+Sau đó qword:
+
+```text
+0x00000004_6E71C38F
+```
+
+được generic copy routine `0x18047390` copy vào mutable request. Đường cache hit/miss bắt đầu sau bước này.
+
+```text
+CONFIRMED: virtual 0x04800001 → masked-real 0x6E71C38F xảy ra trước cache lookup.
+CONFIRMED: R14D đồng thời chứa real CLR token 0x040088ED.
+STRONG: R8D = R14D XOR resolverMask.
+UNPROVEN: exact instruction tạo R8D và exact source tạo R14D.
+```
+
+### 13.9 CONFIRMED — mask nằm trong resolver-state object và writer khởi tạo đã bắt được
+
+Resolver-state object:
+
+```text
+state          = 0x24100666840
+mask field     = state + 0x30
+mask address   = 0x24100666870
+mask value     = 0x6A714B62
+```
+
+Exact writer gần nhất trước lần dùng:
+
+```text
+TTD 8517:F94
+0x18000F48A  mov dword ptr [rsi+30h],eax
+RSI = 0x24100666840
+EAX = 0x6A714B62
+EDX = 0x6A714B62
+```
+
+Ngay sau đó code zero nhiều field và cấp phát object con 0xE0 byte, nên block này là initializer/constructor candidate của resolver state.
+
+```text
+CONFIRMED: mask được lưu vào resolver-state+0x30 tại 0x18000F48A.
+CONFIRMED: 0x18000F48A chỉ lưu giá trị đã có; chưa phải generator.
+STRONG: mask có scope resolver/proxy instance.
+UNPROVEN: caller/source tạo EAX/EDX, scope giữa instance/process/build, và nguồn host/offline.
+```
+
+### 13.10 Pipeline runtime hiện tại
+
+```text
+virtual token (ví dụ 0x04800001)
+    ↓ map/token-resolution stage chưa đóng exact producer
+real CLR token (R14D = 0x040088ED)
+    ↓ XOR resolverMask 0x6A714B62
+masked-real token (R8D = 0x6E71C38F)
+    ↓ cache lookup 0x1800021B0, khóa (module, masked-real)
+
+cache hit:
+    node +0x28/+0x30/+0x38 → hClass/hMethod/hField
+
+cache miss:
+    masked-real XOR resolverMask → real CLR token
+    ↓ underlying CoreCLR CEEInfo::resolveToken
+    ↓ cache insert 0x1800058A0
+
+handles
+    ↓ temporary 0x38-byte result
+    ↓ secure copy
+CORINFO_RESOLVED_TOKEN output
+```
+
+Lớp mask/cache phục vụ runtime handles. Offline rebuilder cần ưu tiên cạnh:
+
+```text
+virtual KEY → real CLR metadata token
+```
+
+và không cần mô phỏng cache handles nếu đã tái tạo được token thật.
+
+### 13.11 Trạng thái canonical sau AK.21.1
+
+```text
+CONFIRMED
+  raw full-body/suffix/virtual-tail/junk-call của 0x060008E1 không có trong pl_full.bin
+  codeSize 0x2D có 71 record; 0x19 có 31 record
+  resolver output copy dài 0x38 byte
+  cache lookup 0x1800021B0 / insert 0x1800058A0
+  cache key = (module, masked-real token)
+  6E71C38F XOR 6A714B62 = 040088ED
+  6B714FAB XOR 6A714B62 = 010004C9
+  CoreCLR CEEInfo::resolveToken ghi runtime handles
+  mask state+0x30 được ghi tại 0x18000F48A
+
+STRONG
+  R14D là real token từ virtual-token map
+  R8D = realToken XOR resolverMask
+  mask có scope resolver/proxy instance
+  payload dùng encoded/structured representation
+
+UNPROVEN
+  exact producer virtual KEY → real token
+  KEY 4..6 của 0x060008E1
+  record tương ứng của method 0x060008E1
+  nguồn host/offline của resolverMask
+  representation payload và bảng RID → recordIndex
+
+RETRACTED / REFUTED
+  payload lưu raw full body 0x2D hoặc raw suffix 0x19
+  payload = [header + token array + raw IL body] là STRONG
+  maxStack CSV phải bằng maxStack runtime
+  0x1803940AC luôn là token decoder semantic
+  0x6EF14B63 là masked-virtual lookup key
+  cache handle object là cùng map KEY→real token
+  offline rebuilder phải tái tạo runtime handle cache
+```
+
+### 13.12 Thứ tự ưu tiên mới
+
+| Hạng | Việc | Đóng được gì |
+|---|---|---|
+| 1 | Duyệt map `0x24100668DA0` và lấy KEY 4..6 | Hoàn thành oracle KEY→real token cho method mẫu |
+| 2 | Kiểm toàn corpus `nLocals == itemCount` | Đóng record layout và EH size |
+| 3 | Đếm MethodDef rows host | Phân biệt dense protected index / permutation |
+| 4 | Tìm exact producer R14D/R8D | Đóng runtime KEY→real-token stage |
+| 5 | Reverse representation payload/S2 theo method mẫu | Đường chính tới host-only decoder |
+| 6 | Truy caller/source của initializer mask | Chuyển sang AK.22 chỉ khi dẫn tới nguồn host, không đào cache mechanics thêm |
