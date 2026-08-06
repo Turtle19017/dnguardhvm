@@ -203,3 +203,55 @@ r r8
 ```
 
 Không giả định layout sâu hơn của `CORINFO_METHOD_INFO` ngoài các offset đã kiểm bằng data thực tế.
+
+---
+
+## Ghi chú sửa sau AK.14/peer review
+
+### Query boundary không phải ranh giới tự nhiên
+
+Event cuối của census bắt đầu tại `0x180007FFF`, size `4`, nên access thực tế kéo sang `0x180008003`. Vì query ban đầu là:
+
+```text
+[0x180007000,0x180008000)
+```
+
+kết quả `0x444` mô tả aggregate của các access **giao với cửa sổ query**, không chứng minh stream tự nhiên dừng tại page boundary.
+
+Hơn nữa, `TTD.Memory*` đã được quan sát trả access chồng lấn range dù start address nằm ngoài lower bound. Do đó event `0x180007FFF/size4` có thể được tính trong cả query `[0x7000,0x8000)` và query kế `[0x8000,0x40000)`.
+
+### RETRACTED
+
+- Không dùng `0x444` như độ dài tự nhiên của toàn static stream.
+- Không cộng cơ học `0x153 + 0xE6 = 0x239` làm positive control cho wide query nếu chưa loại event chồng biên.
+
+Nếu census `0xE6` của `[0x8000,0x40000)` chứa lại event `A9BDB:53F`, union count dự kiến sẽ là:
+
+```text
+0x153 + 0xE6 - 1 = 0x238
+```
+
+nhưng chỉ được dùng sau khi xác nhận identity của event biên.
+
+### Lệnh phân biệt
+
+```text
+dx @$upper = @$cursession.TTD.MemoryForPositionRange(0x180008000,0x180040000,"r",@$e1,@$e2)
+dx @$upper.Count()
+dx -g @$upper.OrderBy(x => x.Position).Take(8)
+dx @$wide = @$cursession.TTD.MemoryForPositionRange(0x180007000,0x180040000,"r",@$e1,@$e2)
+dx @$wide.Count()
+dx @$wide.Select(x => x.Size).Sum()
+dx @$wide.Select(x => x.Address).Min()
+dx @$wide.Select(x => x.Address).Max()
+```
+
+### Giới hạn độ phủ của trace
+
+Metadata có `10.960` record, trong khi trace có `3.235` compile calls. Ngay cả giả định tối đa mỗi call là một record bảo vệ khác nhau:
+
+```text
+3235 / 10960 = 29.516%
+```
+
+Vì call census còn chứa method thường và có thể chứa compile lặp, unique protected-method coverage của trace này là **nhỏ hơn hoặc bằng 29,516%**, thực tế thấp hơn. Đây là giới hạn của runtime census, không ảnh hưởng mục tiêu cuối host-only/offline nhưng buộc runtime oracle phải lấy mẫu có chiến lược.
