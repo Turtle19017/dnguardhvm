@@ -375,9 +375,51 @@ runtime handles
 Offline rebuilder khÃ´ng cáº§n mÃ´ phá»ng runtime handle cache. Cáº¡nh báº¯t buá»™c lÃ  nguá»“n host/offline dá»±ng:
 
 ```text
-method/KEY ™X[ÓˆY]Y]HÚÙ[‚˜‚‹KKB‚ˆÈÈLˆÕT”‘S•ÕUTÂ‚˜^ÓÓ‘’T“QQˆÌHÚYÛ˜]\™H›ØœÈğìÈÛÛ\™\ÜÙY\QY“Ü”™Yˆ™Y™\™[˜Ù\Ë‚ˆ][\Ö×HÚ0í™È8n¨ÚH°è›™ÈÑVx¡¤œ™X[]ÚÙ[ˆ¸nìXÈxn¯Ü‚ˆÌ™XÛÜ™^[İ]°èÔÕˆ›Ú™Xİ[Ûˆ°ê›ˆğèˆ¸næHLMŒ™XÛÜ™‚ˆ“ØØ[ÈOH˜]Ëš][PÛİ[È][P]\ÈOH
-š][PÛİ[‚ˆ™XÛÜ™Ú^™HHLŠÚ][P]\ÊÙZ]TÚ^™NÈÛİ™\˜YÙH1$pî›™ÈMĞÌ‚ˆ[Ù™œÙ]™Xİ\œ™[˜ÙH1$pî›™Èğèˆ¸næHLMNHøn¨[š‚ˆÜ™\™YÑVx¡¤œ™X[]ÚÙ[ˆX\›ÙH
-ÌNÑVHÈ
-ÌPÈÚÙ[‹‚ˆÑVLx¡¤ŒQÑVL¸¡¤ŒLÎKÑVLø¡¤ŒLQNK‚ˆX\˜[Yx¡¤‘PV8¡¤”ŒM^Xİ]KY›İË‚ˆVÜ™\ÛÛ™\”İ]JÌÌHÔˆŒM^Xİ]KY›İË‚ˆ[™HØXÚHÙ^H
-[Ù[KX\ÚÙY\™X[
-KÛÜ™PÓˆ[YØ][Ûˆ°èÎX]Hİ]]ÛÜK‚‚”Õ“Ó‘Âˆ^[ØY0î[™È[˜ÛÙYÜİXİ\™Y™\™\Ù[][Û‹‚ˆÑVHØÛÜHønéXÈ¸næH[ÈY]Ùİ˜[œØXİ[Û‹‚ˆ™\ÛÛ™\ˆX\ÚÈØÛÜH[È™\ÛÛ™\‹Ü›ŞH[œİ[˜ÙK‚‚•S”“Õ‘S‚ˆ^XİÛİ\˜ÙHÜİÛÙ™›[™H8nì[™ÈÑVx¡¤œ™X[]ÚÙ[ˆX\‚ˆÑVH^˜Xİ[Ûˆ8nêÈš\X[ÚÙ[ˆ8nçÈÛÚİ\Ø[\Ú]K‚ˆÑVH8 $Íˆ°èY™][YKÛX\İYÙHønéØHİY™š^‚ˆ™XÛÜ™ønéØHŒLH°è’Q8¡¤œ™XÛÜ™[™^‚ˆ^[ØYÔÌˆ™\™\Ù[][Ûˆ°èX\ÚÈÛİ\˜ÙHÙ™›[™K‚˜‚‹KKB‚ˆÈÈLKˆ8nêH8nìHxn¯Ü[Â‚Ÿ8n¨[™ÈšxnáØÈxnéXÈpêHŸKK_KK_KK_ŸH^HØ[\‹ÜÛİ\˜ÙH8nì[™ÈÜ™\™YÑVx¡¤œ™X[]ÚÙ[ˆX\1$0ìÛ™È™İxnäÛˆÙ™›[™H]X[ˆ¸nã[™Èš8n©]Ÿˆ¸n«İÑVH^˜Xİ[Ûˆ°èÛÛ\\˜]Ü‹ÛÛÚİ\[œ]ğèˆ8n©]š\X[ÚÙ[ˆ8¡¤ˆÑVH8¡¤ˆ›ÙHŸÈÚxnàÛHX\8nçÈğèXÈY™][YKÜÜÚ][Ûˆ]xnæ[ˆ1$xnàÈ0ëHÑVH8 $Íˆğèˆ0èšY]ÙÜ˜XÛHŸ1$8n¯ÛHY]ÙYˆ›İÜÈÜİ0èXÈ1$xnâÛšLMŒ™XÛÜ™ğìÈ8nàÈ8néÈğèˆ¸næHY]ÙYˆ^HÚ8nâHxnæ]8n«\ÛÛˆ1$q¬8nèØÈ¸n¨ÛÈ¸náÈŸH›Ú[ˆY]ÙŒLX¸næÚHÌ™XÛÜ™ønäH1$xnâÛš’Q8¡¤œ™XÛÜ™°èšY[Ù[X[XÜÈŸˆ™]™\œÙH^[ØYÔÌˆ¸n¬[™Èøn­ÜY]ÙÒÑVH1$pèÈšxn¯İxn¯Ûˆ8næÚHÜİ[Û›HXÛÙ\ˆ‚”›İÈÛİ[xnæ]pëšÚ0í™È0èXÈ1$xnâÛš8nêH8nìH™XÛÜ™Ú0í™ÈÚ8nê[™ÈZ[š[œÙH[™^°èñj[™ÈÚ0í™ÈÚ8nê[™ÈZ[š\›]]][Û‹‚
+method/KEY â†’ real CLR metadata token
+```
+
+---
+
+## 10. CURRENT STATUS
+
+```text
+CONFIRMED
+  S1 signature blobs cÃ³ compressed TypeDefOrRef references.
+  items[] khÃ´ng pháº£i báº£ng KEYâ†’real-token trá»±c tiáº¿p.
+  S0 record layout vÃ  CSV projection trÃªn toÃ n bá»™ 10.960 record.
+  nLocals == raw.itemCount; itemBytes == 4*itemCount.
+  recordSize = 12+itemBytes+ehDataSize; coverage Ä‘Ãºng 0x57C08.
+  ilOffset recurrence Ä‘Ãºng toÃ n bá»™ 10.959 cáº¡nh.
+  ordered KEYâ†’real-token map, node +0x18 KEY / +0x1C token.
+  KEY1â†’040088ED, KEY2â†’010004C9, KEY3â†’0A001D99.
+  map valueâ†’EAXâ†’R14D exact data-flow.
+  R8D=[resolverState+0x30] XOR R14D exact data-flow.
+  Handle cache key (module, masked-real), CoreCLR delegation vÃ  0x38-byte output copy.
+
+STRONG
+  Payload dÃ¹ng encoded/structured representation.
+  KEY scope cá»¥c bá»™ theo method/transaction.
+  Resolver mask scope theo resolver/proxy instance.
+
+UNPROVEN
+  Exact source host/offline dá»±ng KEYâ†’real-token map.
+  KEY extraction tá»« virtual token á»Ÿ lookup call-site.
+  KEY 4â€“6 vÃ  lifetime/map stage cá»§a suffix.
+  Record cá»§a 0x060008E1 vÃ  RIDâ†’recordIndex.
+  Payload/S2 representation vÃ  mask source offline.
+```
+
+---
+
+## 11. Thá»© tá»± tiáº¿p theo
+
+| Háº¡ng | Viá»‡c | Má»¥c tiÃªu |
+|---|---|---|
+| 1 | Truy caller/source dá»±ng ordered KEYâ†’real-token map | ÄÃ³ng nguá»“n offline quan trá»ng nháº¥t |
+| 2 | Báº¯t KEY extraction vÃ  comparator/lookup input | HoÃ n táº¥t virtual token â†’ KEY â†’ node |
+| 3 | Kiá»ƒm map á»Ÿ cÃ¡c lifetime/position muá»™n Ä‘á»ƒ tÃ¬m KEY 4â€“6 | HoÃ n thÃ nh method oracle |
+| 4 | Äáº¿m MethodDef rows host | XÃ¡c Ä‘á»‹nh 10.960 record cÃ³ thá»ƒ phá»§ toÃ n bá»™ MethodDef hay chá»‰ má»™t táº­p con Ä‘Æ°á»£c báº£o vá»‡ |
+| 5 | Join method `0x060008E1` vá»›i S0 record | Cá»‘ Ä‘á»‹nh RIDâ†’record vÃ  field semantics |
+| 6 | Reverse payload/S2 báº±ng cáº·p method/KEY Ä‘Ã£ biáº¿t | Tiáº¿n tá»›i host-only decoder |
+
+Row count má»™t mÃ¬nh khÃ´ng xÃ¡c Ä‘á»‹nh thá»© tá»± record, khÃ´ng chá»©ng minh dense index vÃ  cÅ©ng khÃ´ng chá»©ng minh permutation.
