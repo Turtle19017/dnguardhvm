@@ -376,4 +376,181 @@ Sau đó làm tương tự cho `16`, `6F`, `2D`, `01`, `00` để bắt đầu d
 
 ---
 
+# BƯỚC AK.3 — Khép kín static slice giữa `7F` và `FE`
+
+## Câu hỏi
+
+1. Các read sau write `IL[1] = 0x7F` và trước write `IL[6] = 0xFE` có tạo một interval tĩnh liên tục không?
+2. Interval mới có tiếp giáp chính xác với slice `[CAC, CCE)` của AK.2 không?
+3. Write `FE` có phải boundary dương duy nhất trong cửa sổ không?
+
+## Giả thuyết đặt trước
+
+- **H1:** read chronology tiếp tục giảm địa chỉ, không gap và không overlap.
+- **H2:** interval mới kết thúc đúng tại `CAC`, tức tiếp giáp slice tạo `7F`.
+- **H3:** cửa sổ có đúng một write vào `IL[6]`, giá trị `FE`.
+
+## Lệnh
+
+```text
+dx @$k1 = @$create("Debugger.Models.TTD.Position",0xA9BDC,0x19FF)
+dx @$k2 = @$create("Debugger.Models.TTD.Position",0xA9BDC,0x1ADB)
+dx @$rfe = @$cursession.TTD.MemoryForPositionRange(0x180007000,0x180008000,"r",@$k1,@$k2)
+dx @$wfe = @$cursession.TTD.MemoryForPositionRange(0x2410066977A,0x2410066977B,"w",@$k1,@$k2)
+```
+
+## Dữ liệu thô — static reads
+
+```text
+TTD           address          size  read IP
+1A04          180007CA8        4     18028BC11
+1A1E          180007CA7        1     18028BC7D
+1A49          180007C9F        8     1802599BC
+1A60          180007C9B        4     18036E8B0
+1A92          180007C97        4     1802409A3
+```
+
+```text
+@$rfe.Count() = 5
+```
+
+Chronology:
+
+```text
+CA8/4 -> CA7/1 -> C9F/8 -> C9B/4 -> C97/4 -> write FE
+```
+
+## Dữ liệu thô — boundary write
+
+```text
+A9BDC:1ADA
+address  = 0x2410066977A
+size     = 1
+IP       = 0x1802E486B
+IL[6]    = FE
+```
+
+```text
+@$wfe.Count() = 1
+```
+
+## Interval khép kín
+
+Union theo địa chỉ:
+
+```text
+[0x180007C97, 0x180007CAC)
+length          = 0x15 = 21 byte
+sum(read sizes) = 21 byte
+gap             = 0
+overlap         = 0
+direction       = strictly descending
+```
+
+Bytes theo địa chỉ tăng:
+
+```text
+90 0C 32 2A 2D D6 B9 8D 7A 25 92 0F 00 00 00 00
+5C 80 4A 56 3F
+```
+
+## Tiling với AK.2
+
+```text
+AK.2: [0x180007CAC, 0x180007CCE) -> write IL byte 7F
+AK.3: [0x180007C97, 0x180007CAC) -> write IL byte FE
+```
+
+Hai slice:
+
+```text
+adjacent        = true
+shared gap      = 0
+shared overlap  = 0
+combined union  = [0x180007C97, 0x180007CCE)
+combined length = 0x37 = 55 byte
+```
+
+Thứ tự runtime tiếp tục giảm qua boundary write `7F`:
+
+```text
+... CAC -> write 7F -> CA8 -> CA7 -> C9F -> C9B -> C97 -> write FE
+```
+
+## Kết luận AK.3
+
+### CONFIRMED
+
+- Static slice tiêu thụ giữa hai write IL liên tiếp `7F -> FE` là chính xác `[0x180007C97, 0x180007CAC)`, dài 21 byte.
+- Slice không có gap, không overlap và được đọc theo địa chỉ giảm nghiêm ngặt.
+- Cửa sổ có đúng một boundary write: `IL[6] = 0xFE` tại `A9BDC:1ADA`.
+- Hai output boundary liên tiếp phân chia hai static slice tiếp giáp hoàn hảo: `[CAC,CCE)` rồi `[C97,CAC)`.
+- Reverse static stream tiếp tục tuyến tính qua ít nhất hai lần emit opcode liên tiếp (`7F`, `FE`).
+
+### STRONG
+
+- Slice `[C97,CAC)` là encoded recipe/microprogram tạo byte IL `FE` trong state runtime hiện tại.
+- Các lần ghi IL đang đóng vai trò boundary tự nhiên để phân đoạn reverse stream thành recipe theo opcode.
+- RBX/cursor state nhiều khả năng được bảo toàn hoặc tái nạp sao cho stream tiếp tục đúng byte kế trước sau mỗi write.
+
+### UNPROVEN
+
+- Slice 21 byte tự nó đủ tạo `FE` khi không có stack/register/flags đầu vào.
+- RBX bằng effective source address tại các read `1A49`, `1A60`, `1A92`; chưa chụp register/disassembly tại ba điểm này.
+- Mọi opcode đều tương ứng đúng một contiguous slice.
+- Cơ chế này áp dụng cho method người dùng virtualized, không chỉ stub cctor.
+
+## Artifact
+
+```text
+Raw WinDbg TTD output do người dùng gửi trong phiên, ngày 2026-08-06.
+```
+
+## Bước phân biệt tiếp theo — AK.4
+
+Khép kín slice kế tiếp giữa write `FE` và write `16`:
+
+```text
+start = A9BDC:1ADB
+end   = A9BDC:1BAF
+```
+
+Đồng thời chụp ba read chưa kiểm tra RBX của AK.3:
+
+```text
+!tt A9BDC:1A49
+r rbx,rax,rdx,rsi,rcx,r8,r9,r10,r11
+u @rip L3
+
+!tt A9BDC:1A60
+r rbx,rax,rdx,rsi,rcx,r8,r9,r10,r11
+u @rip L3
+
+!tt A9BDC:1A92
+r rbx,rax,rdx,rsi,rcx,r8,r9,r10,r11
+u @rip L3
+```
+
+Query slice `FE -> 16`:
+
+```text
+dx @$m1 = @$create("Debugger.Models.TTD.Position",0xA9BDC,0x1ADB)
+dx @$m2 = @$create("Debugger.Models.TTD.Position",0xA9BDC,0x1BAF)
+dx @$r16 = @$cursession.TTD.MemoryForPositionRange(0x180007000,0x180008000,"r",@$m1,@$m2)
+dx @$r16.Count()
+dx -g @$r16
+
+dx @$w16 = @$cursession.TTD.MemoryForPositionRange(0x2410066977B,0x2410066977C,"w",@$m1,@$m2)
+dx @$w16.Count()
+dx -g @$w16
+```
+
+Mục tiêu:
+
+```text
+exact static interval -> IL byte 16
+```
+
+---
+
 _End of current AK evidence log._
