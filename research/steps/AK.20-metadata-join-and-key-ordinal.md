@@ -234,3 +234,256 @@ Sáu bộ `(mdToken, codeSize, maxStack, ehCount, itemCount)` là đủ để đ
 
 - Consumer của buffer `0x24100669774`: AK.19 đã trả lời gián tiếp — nó là staging của prefix, và prefix là template. Không còn giá trị phân biệt.
 - Wide static census `[0x180007000, 0x180040000)`: vẫn nên chạy để đóng con số `0x444`, nhưng đã tụt hạng. Nếu nhánh A đúng thì ISA của stream tĩnh không còn nằm trên đường tới mục tiêu offline.
+
+---
+
+## AK.20.1 — Kết quả đo trực tiếp: row-index identity bị bác, EH layout đóng, proxy wrapper được định danh
+
+### `methods.csv` hiện tại chỉ là bảng tóm tắt
+
+Schema thực tế:
+
+```text
+recOff
+maxStack
+codeSize
+nLocals
+ehCount
+ilOffset
+```
+
+Tổng số dòng:
+
+```text
+10960
+```
+
+File này **không có** `itemCount`, `itemBytes` hoặc `items[]`. Vì vậy nó đủ để lọc candidate record theo hình dạng, nhưng chưa thể tự nó kiểm chứng phép nối:
+
+```text
+virtual KEY k -> items[k-1]
+```
+
+Muốn đóng phép nối đó phải đọc record đầy đủ từ metadata đã giải hoặc mở rộng exporter.
+
+### Row 2272 và 2273 không phải identity mapping của RID `0x8E1`
+
+```text
+row[2272]:
+  recOff   = 0x150c4
+  maxStack = 4
+  codeSize = 0x4e
+  nLocals  = 0
+  ehCount  = 0
+  ilOffset = 0xffdec
+
+row[2273]:
+  recOff   = 0x150d0
+  maxStack = 3
+  codeSize = 0x3c
+  nLocals  = 2
+  ehCount  = 0
+  ilOffset = 0xffe3a
+```
+
+Trong khi method `0x060008E1` tại JIT entry có:
+
+```text
+ILCodeSize = 0x2D
+maxStack   = 8
+EHcount    = 0
+```
+
+### CONFIRMED
+
+- `methods.csv` có đúng `10960` records.
+- `row[2272]` và `row[2273]` không khớp method `0x060008E1` theo `codeSize` hoặc `maxStack`.
+- Giả thuyết đơn giản `RID == row index` và hai biến thể off-by-one bị **RETRACTED**.
+
+### UNPROVEN
+
+- Record của `0x060008E1` nằm ở row nào.
+- `codeSize` record lưu full body `0x2D` hay suffix `0x19`.
+- `nLocals` của record tương ứng; IL dùng local 0 nhưng record có thể chứa thêm local không dùng.
+
+### Quét candidate tiếp theo
+
+```powershell
+function H([string]$s) { [Convert]::ToInt32(($s -replace '^0x',''), 16) }
+
+$h1 = $rows | Where-Object {
+    (H $_.codeSize) -eq 0x2d -and
+    [int]$_.maxStack -eq 8 -and
+    [int]$_.ehCount -eq 0
+}
+
+$h2 = $rows | Where-Object {
+    (H $_.codeSize) -eq 0x19 -and
+    [int]$_.maxStack -eq 8 -and
+    [int]$_.ehCount -eq 0
+}
+
+"H1 full-body candidates = $($h1.Count)"
+$h1 | Select-Object recOff,maxStack,codeSize,nLocals,ehCount,ilOffset | Format-Table -AutoSize
+
+"H2 suffix candidates = $($h2.Count)"
+$h2 | Select-Object recOff,maxStack,codeSize,nLocals,ehCount,ilOffset | Format-Table -AutoSize
+```
+
+Không dùng `itemCount=6` trong lần lọc này vì CSV hiện tại không chứa trường đó.
+
+## `CORINFO_METHOD_INFO` layout được xác nhận trên sample S1
+
+Tại `11A7E3:D6C`:
+
+```text
+[R8+0x18] = 0x2D ; ILCodeSize
+[R8+0x1C] = 0x08 ; maxStack
+[R8+0x20] = 0x00 ; EHcount
+[R8+0x24] = 0x00 ; options
+```
+
+Kết hợp với sample `[B]`, nơi `[R8+0x20] = 1`, đây là đối chứng dương/âm trực tiếp cho layout đang dùng.
+
+### CONFIRMED
+
+```text
+CORINFO_METHOD_INFO+0x18 = ILCodeSize
+CORINFO_METHOD_INFO+0x1C = maxStack
+CORINFO_METHOD_INFO+0x20 = EHcount
+CORINFO_METHOD_INFO+0x24 = options
+```
+
+cho các sample đã đo trong trace này.
+
+## Slot `+0xE0` là wrapper của đường token resolution
+
+Disassembly tại `0x18003EE80`:
+
+```text
+0x18003EE94 mov rdi,rdx
+0x18003EE97 mov rbx,rcx
+...
+0x18003EEA5 mov r8d,[rdi+10h]
+0x18003EEA9 mov eax,r8d
+0x18003EEAC and eax,0FF000000h
+0x18003EEB1 cmp eax,70000000h
+...
+0x18003EEBF and r8d,800000h
+0x18003EEC6 je  0x18003EEE9
+
+; virtual-token path
+0x18003EEC8 mov [rbx+30h],14h
+0x18003EECF mov [rbx+290h],rdi
+0x18003EEDB lea rcx,[rbx+8]
+0x18003EEDF mov edx,[rdi+10h]
+0x18003EEE2 call 0x180007850
+0x18003EEE7 jmp  0x18003EEFD
+
+; non-virtual/delegation path
+0x18003EEE9 mov rcx,[rbx+328h]
+0x18003EEF0 mov rax,[rcx]
+0x18003EEF3 mov rdx,rdi
+0x18003EEF6 call qword ptr [rax+0E0h]
+```
+
+### CONFIRMED
+
+- Vtable entry `0x18003EE80` là proxy wrapper của đường xử lý token.
+- Input structure nằm ở `RDX`; token DWORD được đọc tại `[RDX+0x10]`.
+- Wrapper kiểm virtual bit `0x00800000`.
+- Token ảo được chuyển cho helper `0x180007850` với:
+
+```text
+RCX = proxy + 8
+EDX = virtual token
+```
+
+- Token không ảo được delegate tới object nền tại `[proxy+0x328]`, cùng slot `+0xE0`.
+- `0x180007850` là helper nội bộ, còn `0x18003EE80` mới là direct proxy-vtable callback.
+
+### RETRACTED
+
+Lập luận cũ:
+
+```text
+[vtable+0xE0] != 0x180007850
+-> slot +0xE0 không thuộc token-resolution path
+```
+
+là sai tầng. Giá trị thật tạo chuỗi:
+
+```text
+vtable +0xE0 -> wrapper 0x18003EE80
+                  -> helper 0x180007850
+                  -> return 0x18003EEE7
+```
+
+Về chức năng, wrapper này là token-resolution callback; tên interface chính xác `ICorJitInfo::resolveToken` phù hợp mạnh với ABI và việc token nằm tại structure offset `+0x10`.
+
+## Output không nằm trong `RAX`, stack hoặc proxy region đã search
+
+Tại continuation `0x18003EEE7` sau helper:
+
+```text
+RAX = 5
+RDI = 0xFD8257ADD0 ; input/output structure pointer giữ từ wrapper RDX
+```
+
+Không tìm thấy `0x040088ED` trong:
+
+```text
+[RSP, RSP+0x100)
+[proxy, proxy+0x200)
+```
+
+### RETRACTED
+
+Dự đoán đặt trước:
+
+```text
+RAX hoặc stack slot sẽ chứa real token 0x040088ED
+```
+
+không khớp lần resolve đầu tiên.
+
+Điều này không bác mapping. Callback có thể điền resolved handles vào structure ở `RDI` mà không thay token DWORD bằng CLR metadata token thật.
+
+### Bước phân biệt tiếp theo: so sánh structure trước/sau helper
+
+Tại vị trí hiện tại `11CA36:26C`:
+
+```text
+dq @rdi L8
+dd @rdi L10
+s -d @rdi L80 040088ed
+```
+
+So sánh cùng structure tại helper entry và return:
+
+```text
+!tt 11A7E4:8EC
+dq 0x000000fd8257add0 L8
+dd 0x000000fd8257add0 L10
+
+!tt 11CA36:26C
+dq 0x000000fd8257add0 L8
+dd 0x000000fd8257add0 L10
+```
+
+Liệt kê exact writes trong helper window:
+
+```text
+dx @$pa20 = @$create("Debugger.Models.TTD.Position",0x11A7E4,0x8EC)
+dx @$pb20 = @$create("Debugger.Models.TTD.Position",0x11CA36,0x26C)
+dx @$wrt20 = @$cursession.TTD.MemoryForPositionRange(0x000000fd8257add0,0x000000fd8257ae10,"w",@$pa20,@$pb20)
+dx @$wrt20.Count()
+```
+
+Chỉ khi count dương:
+
+```text
+dx -g @$wrt20
+```
+
+Mục tiêu là xác định callback điền `hClass`, `hMethod`, `hField` hoặc field nào khác trong resolved-token structure; không tiếp tục mặc định rằng real metadata token phải xuất hiện nguyên dạng trong output.
