@@ -161,3 +161,104 @@ dx -g @$wStubB
 ```
 
 Nếu SOS không nhận `!dumpmd`, không suy tên method từ pointer.
+
+---
+
+## Ghi chú sửa sau peer review
+
+### `ICorJitInfo*` là ứng viên proxy HVM
+
+Tại entry `[B]`:
+
+```text
+RDX = 0x24100668928 ; ICorJitInfo*
+R8  = 0xFD8257D600  ; CORINFO_METHOD_INFO* trên stack
+```
+
+`RDX` nằm trong cùng vùng heap đã quan sát chứa nhiều state/arena của HVM. Đây là **STRONG** cho mô hình DNGuard truyền một object proxy `ICorJitInfo` riêng, nhưng chưa nâng CONFIRMED chỉ từ locality.
+
+Kiểm chứng quyết định:
+
+```text
+!tt ABBAE:FDD
+dq @rdx L1
+dq poi(@rdx)+e0 L1
+```
+
+Dự đoán đặt trước:
+
+```text
+[@rdx]       = 0x180035100 ; proxy vtable đã ghi trước
+[vtable+E0]  = 0x180007850 ; resolver slot đã biết
+```
+
+Nếu cả hai khớp, identity của proxy được nâng CONFIRMED. `CORINFO_METHOD_INFO` cung cấp IL/locals; proxy `ICorJitInfo` vẫn cần cho `resolveToken`, `getEHinfo` và các callback JIT khác.
+
+### Decode IL `[B]`: một token thật đã CONFIRMED, token thứ hai còn thiếu một byte
+
+20 byte đã dump decode theo boundary IL:
+
+```text
+17                            ldc.i4.1
+0A                            stloc.0
+21 02 DE 17 6A 41 02 00 00    ldc.i8 0x000002416A17DE02
+73 9C 1D 00 0A                newobj 0x0A001D9C
+80 ED 88 00 ??                stsfld operand chưa đủ 4 byte
+```
+
+Do đó:
+
+### CONFIRMED
+
+- JIT input `[B]` chứa ít nhất một metadata token thật: `0x0A001D9C`.
+- Token này khớp pool entry `rid=0x1D9C, kind=5 -> MemberRef 0x0A001D9C`.
+
+### STRONG
+
+- Nếu byte kế tại `IL+0x14` là `04`, operand `stsfld` là `0x040088ED`, khớp field thật đã map từ virtual token `0x04800001`.
+
+### UNPROVEN
+
+- Mọi token trong HVM-generated methods đều đã là CLR token thật trước `compileMethod`.
+- Một hook duy nhất tại `compileMethod` đủ cho toàn bộ corpus.
+
+Cần dump đủ `0x2C` byte và parse operand theo opcode; không quét mọi cửa sổ 4 byte rồi kiểm bit `0x00800000` vì sẽ tạo false positive trên immediate/branch data.
+
+### `ldc.i8` chưa được gọi là pointer runtime
+
+Giá trị:
+
+```text
+0x000002416A17DE02
+```
+
+chỉ cùng prefix rộng `0x241`, nhưng không nằm trong hai interval đã biết:
+
+```text
+HVM arena gần 0x2410066xxxx
+PE mapping gần 0x2410118xxxx
+```
+
+Nó có thể là pointer, cookie hoặc encoded state. Phải kiểm bằng `!address`, `dq` hoặc memory query trước khi kết luận method nhúng địa chỉ phiên chạy.
+
+### Phân loại theo vùng `ILCode`
+
+Ba mẫu tạo giả thuyết mạnh:
+
+```text
+[B] 0x24100668754 / 0x2C / return 0x180043FFB ; heap/arena candidate
+[C] 0x241011A54B9 / 0x12 / return 0x18003FB4F ; PE image candidate
+[D] 0x2410066A410 / 0x31 / return 0x180043FFB ; heap/arena candidate
+```
+
+### STRONG
+
+- `ILCode` trong HVM heap/arena tương quan với return site `0x180043FFB`.
+- `ILCode` trong PE image tương quan với `0x18003FB4F`.
+
+### UNPROVEN
+
+- Hai return sites phân loại hoàn hảo toàn bộ 3235 calls.
+- Mọi arena ILCode là method bảo vệ và mọi PE ILCode là method thường.
+
+Ưu tiên AK.15 được đổi từ truy riêng consumer của stub sang đóng proxy, phân loại call và lấy mẫu token thực. Truy consumer của stub vẫn là backlog, không còn là đường chính.
