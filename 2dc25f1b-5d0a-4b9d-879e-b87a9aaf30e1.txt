@@ -1,0 +1,145 @@
+# DNGuard HVM 4.9.6 — BÁO CÁO BỔ SUNG (Shim -> Collector -> Rebuilder)
+# Ngày: 2026-07-21  | Nối tiếp report gốc
+
+==========================================================================================
+# 0. Mục đích & TL;DR
+==========================================================================================
+Nối tiếp report gốc (DNGuard_HVM_4.9.6_Runtime_Report). Ghi lại toàn bộ tiến triển kể từ khi chốt
+"dừng probe CDB, chuyển sang native in-process JIT shim". Dùng để mở conversation mới khi hết context.
+
+ĐÃ ĐẠT:
+1) Native JIT shim hook ranh giới HVM->CoreCLR JIT, thu MỌI method trong 1 lần chạy:
+   generated IL + identity(MethodDef) + maxStack + EHcount + locals + resolveToken/getCallInfo/getFieldInfo.
+   Không còn probe từng MethodDef.
+2) Indexer (gộp corpus -> per-method: IL, meta, tokenmap ảo->thật) + offline rebuilder (C#/dnlib) vá IL vào module dump.
+3) GỠ ĐƯỢC nút token ảo (bài toán khó nhất, report §11): ghép callback theo handle -> map virtual->real per-method.
+   Xác minh đúng ngữ nghĩa (MemCipher.Encrypt, Program.Main).
+4) Module LordsMobileBot: 922 method thu được (IL nhất quán 100%); rebuild 838 method, 730 dịch token trọn vẹn;
+   logic thật đã hiện trong dnSpy.
+
+CÒN LẠI: gỡ prologue anti-tamper (v0.6); phục hồi locals kiểu methodSignature (mở khóa Program.Main);
+sửa bắt EH; gỡ bootstrap DNGuard để chạy regression 990.
+
+==========================================================================================
+# 1. Kiến trúc 3 công cụ
+==========================================================================================
+A. DNGuardJitShim (native C++/MinHook) + Launcher (v0.3g):
+   Launcher: CreateProcessW(host, SUSPENDED) -> inject shim -> chờ SHIM_READY -> ResumeThread.
+   Shim: DllMain tối thiểu -> init thread (ngoài loader lock) -> LdrRegisterDllNotification
+         -> clrjit.dll load: MinHook detour getJit. Chạy --mode clrjit-direct (BRANCH B).
+   Branch B: hook clrjit!compileMethod THẬT (lưu con trỏ pristine trong getJit detour, trước khi HVM patch),
+             gate caller ∈ [HVMRun64.base,.end) (HVM gọi clrjit sau khi dịch).
+   Capture: compile_id atomic + TLS compile/callback stack; copy IL ngay; SHA-256;
+            đọc CORINFO_METHOD_INFO; hook thụ động resolveToken(28)+getEHinfo(11)+getCallInfo(138)+getFieldInfo(92);
+            resolver identity (guarded); writer thread ghi corpus bất đồng bộ.
+   Corpus: methods/<compileId>/{method-info.json, generated-il.bin, identity.json, locals.json/.bin, eh.jsonl, callbacks.jsonl}
+
+B. index_corpus.py (v6): key theo (scope, MethodDef token); tự phát hiện module target (--target-ns LordsMobileBot).
+   Xuất by-token/<hex>/{il.bin, locals.bin, meta.json, tokenmap.json} + index/stats/scopes/inconsistent.json.
+   tokenmap = ghép ảo->thật theo handle, GỘP callbacks qua MỌI compile của method.
+
+C. DNGuardRebuilder (C#/.NET8/dnlib 4.4.0, v0.5b): nạp module dump; mỗi MethodDef: đọc il.bin ->
+   PatchTokens(ảo->thật theo tokenmap) -> CreateCilBody(codeSize=il.Length) -> set locals+EH+maxStack ->
+   module.Write(PreserveAll). Xuất rebuilt.txt + self-verify.
+
+==========================================================================================
+# 2. Hằng số runtime đã xác minh
+==========================================================================================
+JITEEVersionIdentifier GUID = {4BCEB905-D550-4A5D-B1EB-276FFF68D183}  (.NET 8 clrjit)
+HVMRun64.dll @ 0x180000000 (KHÔNG ASLR), size 0x3A4000
+getJit @ clrjit+0x104B60 ; real compileMethod @ clrjit+0xED470 (khớp report §9.1)
+DNGuard stub IL = 11 byte (0xB): ldstr "Error, DNGuard Runtime library not loaded!"; newobj Exception; throw
+
+ICorJitInfo vtable slots (.NET 8):
+ resolveToken=28 getCallInfo=138 getFieldInfo=92 getFieldType=90 embedGenericHandle=131 getEHinfo=11
+ getMethodDefFromMethod=113 getMethodClass=12 getMethodNameFromMetadata=115(4 tham số) getMethodSig=3
+ getFieldClass=89 printFieldName=88 getClassNameFromMetadata=35 getArgType=105 getArgNext=104 getArgClass=107
+Struct: CORINFO_SIG_INFO=0x70, CORINFO_SIG_INST=32, CORINFO_EH_CLAUSE=24.
+CORINFO_METHOD_INFO: ftn@0 scope@8 ILCode@0x10 ILCodeSize@0x18 maxStack@0x1C EHcount@0x20 options@0x24 regionKind@0x28 args@0x30 locals@0xA0.
+LƯU Ý: clrjit base + scope handle + runtime handle ĐỔI mỗi run; tokenmap/scope chỉ hợp lệ trong 1 run (muốn gộp nhiều run cần MVID).
+
+==========================================================================================
+# 3. Cơ chế HVM
+==========================================================================================
+1) HVM hook JIT toàn cục -> bắt method của MỌI module (rc-v11: 338 module). PHẢI key (scope,token);
+   token đơn va chạm cross-module (0x06000001 = DevExpress ..ctor lẫn LordsMobileBot <Module>.m8DEC...).
+2) Generated IL chứa TOKEN ẢO high-RID (0x04800001 Field, 0x01800002 Class, 0x0A800003/0x06800005 Method; RID có bit 0x800000).
+   info->ILCode KHÔNG bị patch in-place (before==after, kiểm 5478 method). HVM dịch ảo->thật qua bảng nội bộ + ICorJitInfo wrapper.
+3) Hai tầng resolveToken: ta hook tầng CEEInfo (sau dịch) -> thấy token THẬT. getCallInfo/getFieldInfo nhận token ẢO -> resolve handle thật.
+   Mỗi member gọi 2 lần cùng handle: 1 real(resolveToken), 1 virtual(getCallInfo/getFieldInfo).
+4) Prologue anti-tamper HẰNG SỐ đầu mọi method:
+   ldsflda ZYXDNGuarder::a (ảo 0x04800001); constrained. IntPtr (ảo 0x01800002); callvirt Object::GetHashCode (ảo 0x0A800003); call <junk table bậy> (dead); ... body thật.
+   Class token của constrained. là operand ảo DUY NHẤT không bắt qua callback -> nguồn chính của 'unmapped'.
+
+==========================================================================================
+# 4. Đột phá dịch token
+==========================================================================================
+Map: mỗi member gọi cả token thật (resolveToken) lẫn token ảo (getCallInfo/getFieldInfo) CÙNG handle ->
+ghép theo handle -> ảo->thật. Token thật là token hợp lệ trong module (MethodDef 0x06/MemberRef 0x0A/Field 0x04/TypeRef 0x01).
+Token ảo per-compile, nhưng IL nhất quán (SHA trùng) -> gộp callbacks mọi compile an toàn.
+Rebuild = vá bytes IL (thay operand ảo bằng token thật) rồi dnlib parse -> resolve hết. Không import cross-module.
+Xác minh: MemCipher.Encrypt -> key/salt/SignatureKey/Encrypt/RandomNumberGenerator.Fill/BitConverter.ToUInt64;
+Program.Main -> Application.add_ThreadException / new ThreadExceptionEventHandler(Application_ThreadException).
+
+==========================================================================================
+# 5. Lỗi & khắc phục
+==========================================================================================
+- Branch A (getJit proxy) nằm TRÊN HVM -> chỉ thấy stub 0xB. Dùng Branch B (hook clrjit!compileMethod, gate caller∈HVMRun64).
+- Crash 0xE0434352 khi tự gọi getEHinfo / deref locals.pSig của method không local. Sửa: HOOK THỤ ĐỘNG; đọc locals chỉ khi numArgs>0 + SEH.
+- dnlib CreateCilBody(code,...) tự parse HEADER; il.bin là IL thuần -> phải dùng overload có codeSize=il.Length, exceptions=null, localVarSigTok=0.
+- Bỏ KeepOldMaxStack (maxStack sai -> body invalid); để dnlib tự tính.
+- Ghi module: MetadataFlags.PreserveAll (giữ token/heap).
+- LUÔN lọc (scope,token); scope handle đổi mỗi run.
+- 'có tokenmap' != 'đã rebuild'; unmapped=0 mới là dịch trọn.
+- dnSpy: mở đúng .rebuilt.dll (không phải dump), tránh cache; method CF-flattened (br.s) lỗi decompiler C# nhưng IL hợp lệ -> xem IL (phím L).
+
+==========================================================================================
+# 6. Hiện trạng số liệu
+==========================================================================================
+Corpus rc-v11: 18,936 compile dirs, 338 module.
+Module target LordsMobileBot: 922 method, targetInconsistent=0 (IL tất định).
+Rebuild v0.5b: 838 method rebuilt; 730 fully-translated (unmapped=0). patched=596; unmapped=2909 (class token prologue + junk dead-code, để null).
+Skipped: 59 locals-methodSig (GỒM Program.Main); 25 eh-missing. tokenmap: 124 method, ~2003 cặp.
+locals: 2 method có blob; 83 dùng methodSignature (cbSig=0, chưa lấy). EH: getEHinfo bắt 1/26. dynamicOnly: 309.
+Đã kiểm: self-verify inMem==reloaded; logic thật hiện trong dnSpy IL view; SHA-256 IL Program.Main/get_AppDirectory khớp report §10 (Gate 1).
+
+==========================================================================================
+# 7. Vấn đề còn mở
+==========================================================================================
+1) Prologue anti-tamper (ldsflda a/constrained IntPtr/callvirt GetHashCode/call junk) đầu mọi method:
+   chứa class token ảo 0x01800002 không map (null) + gây br.s -> decompiler C# vấp. => v0.6 GỠ prologue.
+2) Locals methodSignature (83 method, gồm Main): cbSig=0, không blob. => getArgType(105)/getArgNext(104) dựng lại LocalVarSig.
+3) EH bắt thiếu (1/26): soi getEHinfo (method protected có thể không qua getEHinfo như thường / khác tier).
+4) Bootstrap DNGuard (module cctor/ZYXDNGuarder nạp HVMRun64) chưa gỡ -> chưa chạy standalone / chưa đo 990.
+5) Tùy chọn: map hằng số class token prologue 0x01800002->IntPtr toàn cục (nếu không gỡ prologue).
+6) Generic đa file/cross-run: cần capture MVID.
+7) Dynamic-only members (309): cần MemberRef/TypeSpec injection khi rebuild.
+
+==========================================================================================
+# 8. Bước tiếp theo
+==========================================================================================
+v0.6  Gỡ prologue anti-tamper (nhận diện mẫu cố định đầu method; cắt + sửa nhánh) -> hết class-token null, decompile sạch, vô hiệu anti-tamper.
+v0.3h Locals reconstruction: hook thụ động getArgType/getArgNext, lọc sig==&info->locals; rebuilder dựng LocalVarSig -> mở khóa Program.Main + 59 method.
+EH    Soi vì sao getEHinfo bắt 1/26.
+v0.6+ Gỡ bootstrap DNGuard trong bản rebuilt.
+VAL   Chạy regression 990/990 trên assembly rebuilt.
+GEN   Capture MVID -> gộp nhiều run -> generic cho mọi file 4.9.6/.NET8.
+Nguyên tắc: generic collector tại JIT boundary; luôn (scope,token); không over-claim (chỉ tuyên bố khi có artifact/verify);
+mọi đọc con trỏ runtime phải SEH-guard; hook thụ động, không tự gọi trong lúc compile.
+
+==========================================================================================
+# 9. Manifest & quy trình
+==========================================================================================
+Artifact mang theo:
+ DNGuardJitShim_v0.3g.zip   SHA-256 3221D72367B6767C49D761F7F1E94592133D9776BD9B64C566D423F9A5EFB0BF
+ DNGuardRebuilder_v0.5b.zip SHA-256 F468E13FF260CA81C82F0E1D79776CC29230E6AD66855765E906A68D2DE8F9D1
+ index_corpus.py (v6) ; probe_tokenmap.py (self-test PASS)
+Build: shim=MSVC x64 + MinHook + CMake ; rebuilder=.NET8 SDK + dnlib 4.4.0 ; index/probe=Python 3.
+
+Quy trình 1 vòng:
+ 1) Launcher --host <host.exe> --shim .\DNGuardJitShim.dll --out D:\DG496HVM\rc-vNN --mode clrjit-direct  (full run: chạy tới main + thao tác)
+ 2) python index_corpus.py --corpus D:\DG496HVM\rc-vNN --out D:\DG496HVM\index-vNN
+ 3) dotnet DNGuardRebuilder.dll --module <dumped LordsMobileBot.exe> --index D:\DG496HVM\index-vNN --out D:\DG496HVM\LordsMobileBot.rebuilt.dll
+ 4) Kiểm rebuilt.txt (unmapped=0) + dnSpy IL view method đã vá.
+Điền theo phiên bản (nếu clrjit đổi build): jitee_slots.h (GUID+slots) & corinfo_min.h (layout) — verify bằng static_assert + Gate 1.
+

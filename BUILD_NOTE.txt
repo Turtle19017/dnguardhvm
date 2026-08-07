@@ -1,0 +1,12 @@
+Packaging environment note
+==========================
+
+The source tree, project references, XML project files, entry points, engine API
+symbols, file hashes and ZIP integrity were checked in the packaging environment.
+
+The packaging environment does not contain the .NET 8 SDK or a Windows runtime,
+so the five Windows single-file executables were not compiled here. Run the
+`dotnet publish` commands in README.md on Windows. If the compiler reports an
+error, preserve the complete first error line and source line number for a
+source hotfix; nullable warnings from the legacy engine are disabled in the
+engine project and should not block publication.

@@ -1,0 +1,1740 @@
+# DNGuard HVM 4.9.6 — Báo cáo hiện trạng phân tích runtime
+
+## 1. Mục tiêu nghiên cứu
+
+Mục tiêu cuối cùng không phải là capture hoặc giải mã từng MethodDef riêng lẻ.
+
+Hướng chính đã được cố định:
+
+```text
+Phân tích HVM runtime dùng chung
+→ xác định descriptor/table chung
+→ xác định HVM compiler/translator chung
+→ hook ranh giới HVM → CoreCLR JIT
+→ tự động thu mọi method được runtime xử lý
+→ chuẩn hóa IL, token, locals, EH và metadata
+→ xây unpacker generic
+```
+
+Các token cụ thể như:
+
+```text
+0x06003B81
+0x060015E2
+0x0600498D
+```
+
+chỉ được dùng làm mẫu kiểm chứng cơ chế runtime. Chúng không phải pipeline unpack cuối cùng.
+
+Nguyên tắc đã chốt:
+
+```text
+Không CaptureNext
+Không Resume từng method
+Không tạo queue hàng nghìn MethodDef
+Không chạy một process cho mỗi token
+Không yêu cầu trigger thủ công từng method
+```
+
+---
+
+# 2. Target và môi trường
+
+## 2.1. Original host
+
+```text
+D:\LordsBot-Release\LordsMobileBot.exe
+```
+
+Runtime thật phải được kích hoạt bằng original host này.
+
+Bản dumped PE hoặc managed dump chỉ dùng cho:
+
+```text
+metadata lookup
+MethodDef mapping
+assembly structure
+offline rebuilding
+```
+
+Không nên dùng bản dumped để thay thế original host trong quá trình kích hoạt DNGuard runtime.
+
+## 2.2. Managed module chính
+
+```text
+LordsMobileBot.dll
+```
+
+Thông tin đã biết:
+
+```text
+Target framework : .NET 8
+MVID             : b9928e9d-e422-4284-8152-90528a211505
+Entry MethodDef  : 0x06003B81
+```
+
+## 2.3. Main session
+
+```text
+C:\DNGuard496\auto-sessions\20260716_121936_LordsMobileBot
+```
+
+Các lần probe đều kiểm tra `state.json` trước và sau.
+
+Kết quả tới hiện tại:
+
+```text
+StateUnchanged = True
+```
+
+Điều này cho thấy các probe không làm thay đổi corpus/session state chính.
+
+---
+
+# 3. HVM runtime đã thu được
+
+Runtime được extract từ thư mục TEMP khi original application chạy:
+
+```text
+HVMRun64_01.dll
+```
+
+Thông tin nhận dạng:
+
+```text
+Version     : 4.9.6.0
+Size        : 3,783,680 bytes
+SHA-256     : A9A40ED3F807951763DEDE5808CE012A3B6480180244507BC10AB923046668BF
+Architecture: x64
+```
+
+Đây là DNGuard HVM Runtime 4.9.6 hợp lệ.
+
+---
+
+# 4. Static PE mapping của HVMRun64
+
+```text
+Format              PE32+ x64 DLL
+Preferred ImageBase 0x180000000
+Image size          0x3A4000
+Entry point         RVA 0x49F90
+Export              VMRuntime
+VMRuntime RVA       0x9D80
+TLS                 none
+CLR header          none
+Overlay             none
+```
+
+## 4.1. Section HVM chính
+
+```text
+Section             .hvm0
+RVA                 0xB3000
+Virtual size        0x2EA560
+Entropy             khoảng 7.295
+Executable          yes
+Tỷ lệ trên file     khoảng 81%
+```
+
+`.hvm0` chứa phần lớn code HVM được biến đổi mạnh.
+
+Các đặc điểm quan sát được:
+
+```text
+control-flow flattening
+junk instructions
+opaque predicates
+indirect control flow
+nhiều jmp +0
+```
+
+Do đó không phù hợp với cách disassemble tuyến tính toàn bộ section.
+
+Chiến lược đúng là tìm các runtime choke point và semantic boundary thay vì cố devirtualize toàn `.hvm0`.
+
+---
+
+# 5. Runtime compatibility và JIT hooking
+
+HVMRun64 chứa các adapter cho nhiều CLR/runtime:
+
+```text
+.NET Framework 2.x
+.NET Framework 4.x
+CoreCLR
+.NET 8
+các nhánh hỗ trợ tới .NET 10
+```
+
+Đã tìm thấy năm nhánh chung thực hiện logic:
+
+```text
+load clrjit.dll hoặc mscorjit.dll
+→ GetProcAddress("getJit")
+→ gọi getJit()
+→ lấy ICorJitCompiler*
+→ xác định compileMethod entry
+→ VirtualProtect
+→ patch JIT dispatch
+```
+
+Các nhánh static:
+
+```text
+Branch 0  0x180389035  local state trong RSI
+Branch 1  0x18038C475  global root 0x1800A7D98
+Branch 2  0x18038E59C  global root 0x1800A7D90
+Branch 3  0x18038FF43  global root 0x1800A7D88
+Branch 4  0x1803938B1  global root 0x1800A7D80
+```
+
+Runtime trace đã đi tới CoreCLR resolver:
+
+```text
+[HVMTRACE] CORECLR_EXECUTE_ASSEMBLY_RESOLVER
+HVMRun64+0x383CB9
+```
+
+Điều này xác nhận đúng adapter CoreCLR/.NET 8 đang được sử dụng.
+
+---
+
+# 6. Validation corpus
+
+Corpus xác thực ban đầu:
+
+```text
+990 / 990 methods
+```
+
+Trạng thái:
+
+```text
+COMPLETE
+```
+
+Corpus này dùng để:
+
+```text
+đối chiếu MethodDef
+xác thực descriptor mapping
+so sánh generated IL
+đánh giá coverage của collector sau này
+```
+
+Per-method capture thủ công đã bị dừng.
+
+---
+
+# 7. Descriptor và HVM method mapping
+
+Đã xác định được layout runtime dùng chung.
+
+## 7.1. MethodDef table
+
+```text
+MethodDef table = descriptor + 0x3A8
+```
+
+Mỗi entry chứa hai thành phần:
+
+```text
+prefix      = entry >> 20
+primary_off = entry & 0xFFFFF
+```
+
+Primary record:
+
+```text
+record = descriptor + 0x3B0 + primary_off
+```
+
+## 7.2. Secondary stream
+
+Đã chứng minh:
+
+```text
+record.d04 = secondary stream offset
+```
+
+Selector được mã hóa:
+
+```text
+encoded selector = secondary dword XOR 0x6A24E41B
+```
+
+Chuỗi correlation hiện tại:
+
+```text
+MethodDef
+→ table entry
+→ prefix + primary offset
+→ primary record
+→ record.d04
+→ secondary stream
+→ encoded selector
+→ HVM decoder/translator
+```
+
+Đây là mapping dùng chung ở cấp runtime, không phụ thuộc vào việc capture từng method riêng biệt.
+
+---
+
+# 8. Ordinary path và helper-only path
+
+Đã quan sát hai loại đường xử lý.
+
+## 8.1. Ordinary path
+
+Các method ordinary có:
+
+```text
+table hit
+primary record
+secondary stream hit
+decoded selector
+HVM translation
+JIT bridge
+```
+
+Ví dụ:
+
+```text
+0x06003B81 Program.Main
+0x060015E2 appUtil.get_AppDirectory
+0x0600498D ZYXDNGuarder.CheckString
+```
+
+## 8.2. Helper-only path
+
+Method:
+
+```text
+0x06005656
+ZYXDNGuarder._05.CD
+```
+
+có:
+
+```text
+prefix = 0xF80
+helper-only path
+không có ordinary secondary stream
+```
+
+Do đó generic unpacker sẽ cần ít nhất hai handler:
+
+```text
+ordinary HVM method handler
+helper-only/special-prefix handler
+```
+
+Tuy nhiên helper-only path không nên chặn việc hoàn thiện ordinary runtime collector.
+
+---
+
+# 9. Xác định đúng điểm generated IL xuất hiện
+
+Một phát hiện quan trọng là:
+
+```text
+HVMRun64+0x164AE
+```
+
+không phải điểm chứa translated IL cuối.
+
+Tại checkpoint này, ba ordinary target vẫn có:
+
+```text
+IL size = 0xB
+```
+
+Đây đúng bằng kích thước placeholder IL đã biết.
+
+Điều này cho thấy DNGuard vẫn giữ hoặc restore placeholder ở vùng đó.
+
+## 9.1. JIT bridge thật
+
+Probe sau đó bám chuỗi:
+
+```text
+HVMRun64+0x164A9
+→ HVMRun64+0xBB90
+→ clrjit!compileMethod
+```
+
+Tại:
+
+```text
+clrjit+0xED470
+```
+
+đã thấy generated IL thật được truyền vào CoreCLR JIT.
+
+Boundary đã được chứng minh:
+
+```text
+DNGuard HVM record/bytecode
+→ HVM compiler/translator
+→ generated CLR IL
+→ original CoreCLR clrjit
+```
+
+---
+
+# 10. Generated IL đã recover
+
+## 10.1. Program.Main
+
+```text
+MethodDef : 0x06003B81
+Name      : LordsMobileBot.Program.Main
+IL size   : 111 bytes
+SHA-256   : 6C93FD21FFD1AA8191A1961E3EBFC32F4C19B5150C2F1CF2E8CEBE9951B95651
+```
+
+## 10.2. appUtil.get_AppDirectory
+
+```text
+MethodDef : 0x060015E2
+Name      : LordsMobileBot.appUtil.get_AppDirectory
+IL size   : 46 bytes
+SHA-256   : 9C7F87FBEFAE2FA2AA774DDD3CED1574055CD5D5C934E91E3146D5F57CA3730A
+```
+
+## 10.3. ZYXDNGuarder.CheckString
+
+```text
+MethodDef : 0x0600498D
+Name      : ZYXDNGuarder.CheckString
+IL size   : 16 bytes
+```
+
+Kết luận:
+
+```text
+generated IL capture boundary = CONFIRMED
+```
+
+---
+
+# 11. Virtual/high-RID token
+
+Generated IL không thể patch trực tiếp vào original assembly vì chứa token dạng:
+
+```text
+0x04800001
+0x01800002
+0x06800004
+0x0A800003
+```
+
+Đây không phải toàn bộ đều là metadata token hợp lệ trong module gốc.
+
+Chúng có thể đại diện cho:
+
+```text
+DNGuard virtual token
+runtime dynamic-scope token
+per-compilation token table
+temporary token generated cho CoreCLR importer
+```
+
+Token có thể chỉ có ý nghĩa trong phạm vi:
+
+```text
+CORINFO_METHOD_INFO.scope
+ICorJitInfo instance
+runtime compilation context
+```
+
+Do đó không được giả định cùng một virtual token luôn map tới cùng metadata member trong mọi method.
+
+---
+
+# 12. HVM ICorJitInfo wrapper
+
+Vtable sweep đã xác nhận CoreCLR thật sự gọi các callback qua HVM wrapper.
+
+## 12.1. Program.Main
+
+```text
+Tổng callback       : 38 trong slot sweep ban đầu
+Số slot khác nhau   : 12
+```
+
+Trong return probe tập trung:
+
+```text
+SLOT_ENTER  = 23
+SLOT_RETURN = 23
+```
+
+Phân bố chính:
+
+```text
+slot 28   CEEInfo::resolveToken                  16 calls
+slot 92   CEEInfo::getFieldInfo                   3 calls
+slot 90   CEEInfo::getFieldType                   1 call
+slot 131  CEEInfo::embedGenericHandle             2 calls
+slot 142  CEEJitInfo::getStaticFieldCurrentClass  1 call
+```
+
+## 12.2. appUtil.get_AppDirectory
+
+Trong return probe:
+
+```text
+SLOT_ENTER  = 6
+SLOT_RETURN = 6
+```
+
+Phân bố:
+
+```text
+slot 28  CEEInfo::resolveToken  5 calls
+slot 92  CEEInfo::getFieldInfo  1 call
+```
+
+## 12.3. CheckString
+
+```text
+callback count = 0
+```
+
+Điều này phù hợp với generated IL đơn giản của method:
+
+```text
+load constants
+call bằng token bình thường
+ret
+```
+
+Nó không cần resolve virtual token qua HVM JITInfo wrapper.
+
+---
+
+# 13. Return-site mapping
+
+Return probe v0.9.8 đã sửa lỗi module-relative breakpoint.
+
+RVA:
+
+```text
+0x87785
+```
+
+ban đầu bị đặt sai dưới:
+
+```text
+HVMRun64+0x87785
+```
+
+Trong thực tế đây là return site thuộc:
+
+```text
+clrjit+0x87785
+```
+
+Sau khi đặt đúng module, slot 131 hit thành công.
+
+## 13.1. resolveToken return sites — Program.Main
+
+```text
+clrjit+0x981C8  9 calls
+clrjit+0x983FF  3 calls
+clrjit+0x95C9F  1 call
+clrjit+0xAA609  1 call
+clrjit+0x97DF3  1 call
+clrjit+0x59595  1 call
+```
+
+## 13.2. resolveToken return sites — get_AppDirectory
+
+```text
+clrjit+0x983FF  1 call
+clrjit+0x95C9F  1 call
+clrjit+0x981C8  3 calls
+```
+
+Các return sites khác nhau có thể phản ánh các importer path khác nhau:
+
+```text
+field operand
+method call
+newobj
+cast/type token
+generic token
+```
+
+---
+
+# 14. Virtual token → runtime handle mapping
+
+Probe v0.9.9 đã hoàn thành thành công:
+
+```text
+captureComplete = true
+timedOut        = false
+StateUnchanged  = true
+```
+
+## 14.1. get_AppDirectory
+
+```text
+resolveTokenEvents          = 5
+resolveTokenCompletedEvents = 5
+```
+
+Mapping đã thu được:
+
+```text
+0x04800001 Field
+→ hField  = 0x7FFADC674198
+
+0x01800002 Class
+→ hClass  = 0x7FFADC4B70A0
+
+0x0A800003 Method
+→ hMethod = 0x7FFADC405F98
+
+0x0A800004 Method
+→ hMethod = 0x7FFADC864B98
+
+0x0A800005 Method
+→ hMethod = 0x7FFADC78C3F8
+```
+
+## 14.2. Program.Main
+
+```text
+resolveTokenEvents          = 16
+resolveTokenCompletedEvents = 16
+```
+
+Các token đã quan sát:
+
+```text
+0x04800001 Field
+0x01800002 Class
+0x0A800003 Method
+0x01000017 Class
+0x06800004 Method
+0x06800005 Method
+0x06800006 Method
+0x04800007 Field
+0x06800008 Method
+0x06800009 Method
+0x0480000A Field
+0x0A80000B Method | NewObj
+0x0A80000C Method
+0x0A80000D Method
+0x0A80000E Method
+0x01000017 Class | Casting
+```
+
+Đây là milestone rất quan trọng:
+
+```text
+generated IL operand
+→ virtual token
+→ CEEInfo::resolveToken
+→ hClass / hMethod / hField
+```
+
+Như vậy cơ chế runtime semantic resolution đã được chứng minh.
+
+---
+
+# 15. Điểm hiện chưa hoàn thành
+
+## 15.1. Runtime handle → metadata identity
+
+Hiện có:
+
+```text
+hMethod
+hField
+hClass
+```
+
+Nhưng chưa hoàn tất mapping generic sang:
+
+```text
+assembly/module
+MVID
+metadata token
+declaring type
+member name
+method signature
+field signature
+generic arguments
+```
+
+Đây là bước validation còn lại trước khi xây collector tổng quát.
+
+## 15.2. Local signature
+
+Cần thu đầy đủ:
+
+```text
+CORINFO_METHOD_INFO.locals
+local variable count
+local types
+class handles
+generic instantiations
+pinned/byref information
+```
+
+Generated IL không thể rebuild chính xác nếu thiếu local signature.
+
+## 15.3. Exception handling
+
+Nếu:
+
+```text
+EHcount > 0
+```
+
+cần hook:
+
+```text
+ICorJitInfo::getEHinfo
+```
+
+và thu mọi:
+
+```text
+CORINFO_EH_CLAUSE
+```
+
+Bao gồm:
+
+```text
+try offsets
+handler offsets
+filter offsets
+clause flags
+catch class handle
+```
+
+## 15.4. Generic context
+
+Cần xử lý:
+
+```text
+class generic instantiation
+method generic instantiation
+MethodSpec
+TypeSpec
+constrained call
+embedGenericHandle
+generic dictionary lookups
+```
+
+## 15.5. Dynamic-only members
+
+Không phải mọi runtime handle đều bắt buộc có metadata token tồn tại sẵn.
+
+Một số có thể cần:
+
+```text
+MemberRef injection
+MethodSpec injection
+TypeSpec injection
+StandAloneSig injection
+runtime helper rewrite
+```
+
+## 15.6. Helper-only method path
+
+Prefix `0xF80` vẫn cần một handler riêng sau khi ordinary collector ổn định.
+
+---
+
+# 16. Kiến trúc generic runtime collector
+
+Bước chính tiếp theo không phải tạo thêm một probe riêng cho từng MethodDef.
+
+Collector tổng quát nên có kiến trúc:
+
+```text
+Original host chạy một lần
+        │
+        ▼
+HVMRun64 runtime initialization
+        │
+        ▼
+Hook generic HVM → clrjit bridge
+        │
+        ▼
+Mọi CORINFO_METHOD_INFO đi qua collector
+        │
+        ├── generated IL
+        ├── method handle
+        ├── module/scope
+        ├── maxStack
+        ├── EH count
+        ├── locals
+        └── compilation context
+        │
+        ▼
+Theo dõi JITInfo callbacks theo compile_id
+        │
+        ├── resolveToken
+        ├── getFieldInfo
+        ├── getFieldType
+        ├── getCallInfo
+        ├── embedGenericHandle
+        └── getEHinfo
+        │
+        ▼
+Semantic normalization
+        │
+        ├── token map
+        ├── member identity
+        ├── local signatures
+        ├── EH clauses
+        └── generic metadata
+        │
+        ▼
+Module-wide corpus
+        │
+        ▼
+Offline assembly rebuild
+```
+
+---
+
+# 17. Correlation model của collector
+
+Mỗi compilation cần một:
+
+```text
+compile_id
+```
+
+Ví dụ key:
+
+```text
+process id
+thread id
+method handle
+CORINFO_METHOD_INFO pointer
+IL pointer
+timestamp/sequence
+```
+
+Mọi JITInfo event phải được nối với `compile_id` tương ứng.
+
+Không nên chỉ ghép theo thread vì:
+
+```text
+nested JIT compilation
+re-entrant callbacks
+tiered compilation
+multi-threaded JIT
+```
+
+có thể làm sai correlation.
+
+Collector cần stack/context per thread:
+
+```text
+thread
+└── active compile stack
+    └── compile_id
+        └── active callback stack
+```
+
+---
+
+# 18. Output corpus dự kiến
+
+```text
+runtime-corpus/
+├── session.json
+├── runtime.json
+├── modules.json
+├── corpus-index.json
+├── methods/
+│   ├── 06003B81/
+│   │   ├── method-info.json
+│   │   ├── generated-il.bin
+│   │   ├── generated-il.txt
+│   │   ├── token-map.json
+│   │   ├── locals.json
+│   │   ├── eh.json
+│   │   ├── generics.json
+│   │   └── callbacks.jsonl
+│   └── 060015E2/
+│       └── ...
+├── unresolved-handles.json
+├── dynamic-members.json
+└── coverage.json
+```
+
+Deduplication nên dùng:
+
+```text
+module MVID
+MethodDef hoặc stable method identity
+generated IL hash
+generic context hash
+```
+
+---
+
+# 19. Generic unpacker offline
+
+Sau khi corpus đủ dữ liệu, rebuild pipeline cần:
+
+```text
+1. Load dumped/original managed module.
+2. Map runtime method identity về MethodDef.
+3. Replace placeholder IL bằng generated IL.
+4. Translate virtual tokens.
+5. Reuse token thật nếu member đã tồn tại.
+6. Inject MemberRef/TypeRef/TypeSpec/MethodSpec nếu cần.
+7. Rebuild local StandAloneSig.
+8. Rebuild EH sections.
+9. Recalculate MaxStack.
+10. Fix RVA/body layout.
+11. Preserve resources, assembly refs và attributes.
+12. Validate module load.
+13. Execute regression corpus.
+```
+
+Generic unpacker cần phân biệt:
+
+```text
+metadata-representable methods
+dynamic-only methods
+runtime helper methods
+helper-only HVM path
+```
+
+---
+
+# 20. Trạng thái tiến trình hiện tại
+
+```text
+A. Validation corpus                    990 / 990  COMPLETE
+B. Per-method manual capture                       STOPPED
+C. HVM runtime harvest                            COMPLETE
+D. HVMRun64 PE/static mapping                     COMPLETE
+E. CoreCLR/.NET 8 runtime path                    COMPLETE
+F. Descriptor/secondary stream mapping            COMPLETE
+G. Generated IL JIT boundary                      COMPLETE
+H. JITInfo wrapper slot discovery                 COMPLETE
+I. resolveToken entry/return capture              COMPLETE
+J. Virtual token → runtime handle                 COMPLETE
+K. Runtime handle → metadata identity             VALIDATION
+L. Generic runtime collector                      NEXT MAIN MILESTONE
+M. Module-wide corpus                             pending
+N. Locals/EH/generic normalization                pending
+O. Offline generic rebuild                        pending
+P. Final validation                               pending
+```
+
+---
+
+# 21. Những gì đã chứng minh chắc chắn
+
+```text
+1. HVMRun64.dll 4.9.6 là native runtime chính.
+2. Runtime patch/hook CoreCLR JIT.
+3. MethodDef có thể map tới HVM descriptor và stream.
+4. record.d04 là secondary stream offset.
+5. selector được XOR với key 0x6A24E41B.
+6. HVMRun64+0x164AE không phải final IL.
+7. Generated CLR IL xuất hiện tại CoreCLR compileMethod boundary.
+8. Generated IL chứa virtual/high-RID token.
+9. HVM cung cấp ICorJitInfo wrapper.
+10. CoreCLR gọi HVM resolveToken/getFieldInfo và các callback khác.
+11. Virtual token có thể map sang runtime handles.
+12. Toàn bộ cơ chế này là runtime-generic, không riêng một MethodDef.
+```
+
+---
+
+# 22. Những gì chưa được phép tuyên bố
+
+Hiện chưa thể tuyên bố:
+
+```text
+DNGuard HVM 4.9.6 đã được unpack hoàn toàn.
+Toàn bộ method đã được recover.
+Mọi virtual token đã được chuyển về metadata thật.
+EH, locals và generics đã được rebuild.
+Helper-only path đã được xử lý.
+Assembly rebuilt đã chạy đầy đủ.
+```
+
+Tuyên bố chính xác ở thời điểm này là:
+
+```text
+Đã xác định và chứng minh runtime pipeline từ HVM descriptor tới
+generated CLR IL và JIT semantic token resolution.
+
+Đã đủ nền tảng để chuyển từ probe nghiên cứu sang phát triển
+generic runtime collector.
+
+Offline generic unpacker chưa hoàn thành.
+```
+
+---
+
+# 23. Bước tiếp theo được chỉ đạo
+
+Bước tiếp theo gồm hai pha ngắn.
+
+## Pha 1 — Xác nhận handle identity dùng chung
+
+Dùng một lần để xác định cách ổn định nhất chuyển:
+
+```text
+hMethod / hClass / hField
+```
+
+sang:
+
+```text
+module + metadata token + name + signature
+```
+
+Không tiếp tục mở rộng probe theo danh sách MethodDef.
+
+## Pha 2 — Bắt đầu Generic Runtime Collector
+
+Collector phiên bản đầu cần tối thiểu:
+
+```text
+không có -TargetTokens
+hook compileMethod boundary chung
+lọc theo module/MVID
+tự tạo compile_id
+capture generated IL
+capture resolveToken callbacks
+capture runtime handles
+xuất corpus nhiều method trong một lần chạy
+deduplicate method
+```
+
+Sau khi collector thu được coverage ổn định, mới thêm:
+
+```text
+locals
+EH
+generic context
+field/call semantic details
+metadata injection plan
+```
+
+Đây là hướng phát triển chính thức của nhánh DNGuard HVM 4.9.6.
+
+---
+
+# 24. Cập nhật runtime-global sau báo cáo ban đầu
+
+Phần này bổ sung các kết quả thu được sau khi hoàn tất `resolveToken` mapping và chuyển trọng tâm sang runtime-global descriptor, payload stream và translator consumer.
+
+Các probe trong phần này vẫn tuân thủ nguyên tắc:
+
+```text
+Không capture từng method để tạo unpacker.
+Không chạy một process cho mỗi MethodDef.
+Token cụ thể chỉ dùng làm seed để kích hoạt và kiểm chứng cơ chế chung.
+Mục tiêu cuối vẫn là generic runtime collector.
+```
+
+---
+
+# 25. Runtime-global harvester và descriptor database
+
+## 25.1. Global runtime harvester v1.0.0
+
+Harvester runtime-global đã chạy thành công với trạng thái:
+
+```text
+stateUnchanged            = True
+captureComplete           = True
+timedOut                  = False
+globalRuntimeEvents       = 33
+globalResolveCacheItems   = 16
+globalDescriptorCandidates= 1
+```
+
+Seed `Program.Main / 0x06003B81` cho descriptor sau:
+
+```text
+RID                 = 0x3B81
+tablePointer        = 0x138BA9F0080
+rawDescriptor       = 0x035145BB
+primaryOffset       = 0x145BB
+streamDescriptor    = 0x138BABC7640
+streamBase          = 0x138BB6B6920
+secondaryOffset     = 0x18DEC
+decodedSelector     = 0x2D
+record              = 0x138BB13B6C8
+```
+
+Kết quả này xác nhận descriptor không phải dữ liệu chỉ có thể lấy từ từng method riêng lẻ. Runtime giữ một table và stream dùng chung có thể được harvest toàn cục.
+
+## 25.2. Runtime table window v1.1.2
+
+Runtime table window đã thu được:
+
+```text
+stateUnchanged = True
+captureComplete= True
+timedOut       = False
+non-zero token-map entries = 64,728
+```
+
+Ba pointer quan trọng trong runtime context:
+
+```text
+rbp + 0x3A8 = token-map / MethodDef descriptor table
+rbp + 0x3B0 = HVM stream base
+rbp + 0x3B8 = auxiliary/runtime table
+```
+
+Đây là layout runtime-global và có thể dùng làm nền cho module-wide enumeration.
+
+---
+
+# 26. Công thức descriptor và stream đã xác minh bằng code window
+
+Probe code window v1.2.2 đã xác minh trực tiếp công thức tại runtime.
+
+## 26.1. MethodDef table lookup
+
+```text
+RID            = dword [r13 + 0x90]
+tokenMapBase   = qword [rbp + 0x3A8]
+rawDescriptor  = dword [tokenMapBase + (RID - 1) * 4]
+primaryOffset  = rawDescriptor & 0x000FFFFF
+```
+
+## 26.2. Secondary stream decode
+
+```text
+record         = qword [rsi]
+streamOffset   = dword [record + 4]
+mode           = dword [rbp + 0x228]
+streamBase     = qword [rbp + 0x3B0]
+streamKey      = dword [rbp + 0x194]
+
+if mode == 0:
+    streamOffset >>= 1
+
+encodedSelector = dword [streamBase + streamOffset]
+decodedSelector = encodedSelector XOR streamKey
+payloadCursor   = streamBase + streamOffset + 4
+```
+
+Với `Program.Main`:
+
+```text
+RID             = 0x3B81
+rawDescriptor   = 0x035145BB
+primaryOffset   = 0x145BB
+streamOffset    = 0x18DEC
+encodedSelector = 0x6A24E436
+streamKey       = 0x6A24E41B
+decodedSelector = 0x0000002D
+```
+
+Đây là bằng chứng code-level cho chuỗi:
+
+```text
+MethodDef RID
+→ runtime token-map entry
+→ raw descriptor
+→ primary record
+→ secondary stream offset
+→ selector
+→ payload cursor
+```
+
+---
+
+# 27. Runtime formula probe v1.3.3
+
+Probe v1.3.3 thu được:
+
+```text
+Loaded          = True
+Breakpoints     = True
+Bad reg error   = False
+Timed out       = False
+Table events    = 288
+Stream events   = 81
+Unique RIDs     = 288
+Unique raw      = 288
+Unique selector = 20
+```
+
+Toàn bộ `81 / 81` stream event ghép được trực tiếp với table event ngay trước đó:
+
+```text
+TABLE.r13 == STREAM.rbx
+TABLE → STREAM event gap = 1
+```
+
+Điều này xác nhận table lookup và stream decode thuộc cùng một runtime pipeline liên tục.
+
+Hai seed đã được kiểm chứng:
+
+```text
+0x06003B81:
+rawDescriptor = 0x035145BB
+primaryOffset = 0x145BB
+streamOffset  = 0x18DEC
+selector      = 0x2D
+
+0x060015E2:
+rawDescriptor = 0x03506BB2
+primaryOffset = 0x06BB2
+streamOffset  = 0xD8020
+selector      = 0x01
+```
+
+CDB có thể thoát với access violation sau khi dữ liệu đã capture xong. Đây không phải lỗi của công thức runtime, nhưng collector chính thức cần dừng sạch trước khi process đi vào path không còn cần thiết.
+
+---
+
+# 28. Payload cursor và record-data cursor
+
+## 28.1. Payload probe v1.4.0
+
+Probe đã xác nhận:
+
+```text
+payloadCursor = streamBase + streamOffset + 4
+```
+
+64 byte đầu của selector payload không phải CLR IL hoặc header CLR bình thường. Dữ liệu có dạng VM stream được encode.
+
+XOR từng DWORD với:
+
+```text
+key194 = 0x6A24E41B
+```
+
+làm xuất hiện cấu trúc DWORD có quy luật, cho thấy đây là stream đã được mã hóa bằng runtime key.
+
+## 28.2. Record-data formula v1.4.1
+
+Đã xác minh thêm:
+
+```text
+recordType       = recordD00 & 0xFF
+recordDataOffset = (recordD00 >> 8) & 0x00FFFFFF
+recordDataCursor = streamBase + recordDataOffset
+```
+
+Ví dụ:
+
+```text
+0x06003B81:
+recordD00       = 0x00850003
+recordType      = 0x03
+recordDataOffset= 0x00008500
+
+0x060015E2:
+recordD00       = 0x03AA5003
+recordType      = 0x03
+recordDataOffset= 0x0003AA50
+```
+
+Do đó một ordinary HVM method có ít nhất hai vùng stream liên quan:
+
+```text
+selector stream:
+streamBase + streamOffset
+
+record-data stream:
+streamBase + recordDataOffset
+```
+
+Hai vùng đều có cấu trúc sau khi XOR với `key194`, nhưng hiện chưa được phép giả định một vùng luôn là bytecode cuối và vùng kia luôn là metadata. Cần tiếp tục xác định vai trò bằng translator trace.
+
+---
+
+# 29. Cluster boundary validation
+
+Một cluster gồm sáu target gần `0x060015E2` đã được capture:
+
+```text
+0x060015F2
+0x060015E5
+0x060015F1
+0x060015E2
+0x060015E8
+0x0600168F
+```
+
+Capture thô có:
+
+```text
+6 target × 6 raw windows = 36 binary artifacts
+```
+
+Sau hậu xử lý XOR:
+
+```text
+12 xor-key194 candidate files
+tổng binary artifacts = 48
+```
+
+Lỗi thiếu XOR trước đó là lỗi parser/PowerShell `OrderedDictionary`, không phải mất dữ liệu runtime.
+
+## 29.1. Boundary xác minh bằng overlap
+
+Với mọi cặp liền kề trong cluster:
+
+```text
+selector-stream:
+current[delta : delta + 128] == next[0 : 128]
+
+record-data:
+current[delta : delta + 128] == next[0 : 128]
+```
+
+Kết quả:
+
+```text
+selector overlap verified = 5 / 5
+record-data overlap verified = 5 / 5
+```
+
+Điều này chứng minh các offset liền kề có thể dùng để cắt chunk method trong cluster đã capture.
+
+## 29.2. Boundary của 0x060015E2
+
+```text
+MethodDef        = 0x060015E2
+decodedSelector  = 0x00000001
+key194           = 0x6A24E41B
+
+selectorOffset   = 0x000D8020
+next selector    = 0x060015E8 @ 0x000D8568
+selector chunk   = 0x548 bytes
+payload-only     = 0x544 bytes
+
+recordDataOffset = 0x0003AA50
+next record-data = 0x060015E8 @ 0x0003ADEC
+record-data chunk= 0x39C bytes
+```
+
+Boundary này mạnh hơn việc chỉ dump một window kích thước cố định, vì nó được xác minh bằng byte overlap với entry kế tiếp.
+
+Giới hạn:
+
+```text
+Đây là boundary đã chứng minh trong cluster runtime-observed.
+Chưa phải full static method table boundary cho toàn module.
+```
+
+---
+
+# 30. Selector grammar seed
+
+Đối với selector `0x01`, stream XOR của `0x060015E2` parse khép kín thành:
+
+```text
+header:
+dword[0] = selector = 1
+dword[1] = 0x000D8745
+
+body:
+lặp lại:
+    u32 count
+    count DWORD payload
+```
+
+Tổng số record quan sát được:
+
+```text
+29 records
+```
+
+Tuy nhiên selector:
+
+```text
+0x03
+0x06
+0x0B
+0x16
+0x1E
+```
+
+không khớp cùng grammar seed.
+
+Kết luận:
+
+```text
+selector 0x01 có grammar xác định được cho seed hiện tại.
+Không được tổng quát hóa grammar 0x01 cho mọi selector.
+Cần bám translator consumer chung để xác định dispatch và stream semantics.
+```
+
+---
+
+# 31. Shared translator/payload consumer
+
+Probe translator consumer v1.5.0a đã thành công:
+
+```text
+hvmRun64Loaded       = True
+breakpointsInstalled = True
+badRegisterError     = False
+bootstrapEvents      = 6
+consumerEvents       = 6
+binaryArtifacts      = 24
+consumerLimitReached = True
+timedOut             = False
+```
+
+Cả sáu selector đều đi qua cùng một payload consumer site:
+
+```text
+HVMRun64+0x377AAB:
+xor r14d, dword ptr [r15 + rax*4]
+
+next RIP:
+HVMRun64+0x377AAF
+```
+
+Các selector xác nhận:
+
+```text
+selector 0x03  RID 0x4968
+selector 0x0B  RID 0x15F2
+selector 0x16  RID 0x15F1
+selector 0x01  RID 0x15E2
+selector 0x06  RID 0x15E5
+selector 0x1E  RID 0x15E8
+```
+
+Milestone mới:
+
+```text
+Đã xác định được shared VM stream word-reader.
+Consumer này không riêng từng selector hoặc MethodDef.
+```
+
+---
+
+# 32. Stream-read trace và các register assumption đã loại bỏ
+
+## 32.1. v1.5.1
+
+Breakpoint được cài sau `TRACE_START`, dẫn tới bỏ lỡ read event:
+
+```text
+TRACE START = 1
+READ PRE    = 0
+READ POST   = 0
+```
+
+Kết luận: breakpoint cần được cài ngay khi `HVMRun64.dll` load.
+
+## 32.2. v1.5.2
+
+Global breakpoint hit đúng read-site, nhưng giả định:
+
+```text
+r13 = decoder pointer
+```
+
+là sai tại `HVMRun64+0x377AAB`.
+
+Dereference:
+
+```text
+dwo(r13 + 0xD8)
+```
+
+gây memory access error.
+
+Kết luận:
+
+```text
+r13 không phải decoder object ổn định tại read-site.
+Không được dùng r13 để filter selector ở site này.
+```
+
+## 32.3. v1.5.3
+
+Site đã bắt đúng, nhưng `.writemem` trong CDB breakpoint handler bị sinh sai command layout và gây:
+
+```text
+Non-empty string required
+```
+
+Đây là lỗi command generation, không phải lỗi runtime.
+
+## 32.4. v1.5.4
+
+Sau khi bỏ `.writemem` khỏi breakpoint handler:
+
+```text
+HVMRun64 loaded      = True
+Global BP installed  = True
+Bad register error   = False
+CDB syntax error     = False
+Read site samples    = 22
+Read PRE events      = 35
+Read POST events     = 34
+Joined events        = 35
+```
+
+Trace xác nhận tại site:
+
+```text
+payloadDword == r14After
+```
+
+phù hợp với instruction:
+
+```text
+xor r14d, dword ptr [r15 + rax*4]
+```
+
+Tuy nhiên toàn bộ event đã join đều có:
+
+```text
+indexRax = 0
+```
+
+Điều này cho thấy filter:
+
+```text
+r8d == selector
+```
+
+chỉ nhận diện đúng word đầu của nhiều stream khác nhau. Sau word đầu, `r8d` bị runtime dùng lại cho mục đích khác.
+
+Vì vậy `r8d` không phải selector register ổn định cho toàn chuỗi.
+
+---
+
+# 33. Target stream lock cho trace tuần tự
+
+Word đầu của target `0x060015E2` đã đối chiếu khớp:
+
+```text
+decoded first dword = 0x000D8745
+key194              = 0x6A24E41B
+raw first dword     = 0x6A29635E
+```
+
+Kiểm tra:
+
+```text
+0x000D8745 XOR 0x6A24E41B = 0x6A29635E
+```
+
+Chiến lược tiếp theo của v1.5.5:
+
+```text
+1. Dùng selector chỉ để nhận diện candidate word đầu.
+2. Khóa đúng target bằng raw first dword 0x6A29635E.
+3. Lưu payloadBase = r15.
+4. Sau khi khóa, bỏ filter selector register.
+5. Trace mọi read tiếp theo thỏa r15 == payloadBase.
+```
+
+Mục tiêu:
+
+```text
+indexRax = 0, 1, 2, 3, ...
+```
+
+và thu:
+
+```text
+payloadDword
+r14Before
+r14After
+indexRax
+indexEsi
+key194
+stream base
+```
+
+Trạng thái hiện tại:
+
+```text
+v1.5.5 đã được tạo.
+Chưa có kết quả runtime v1.5.5 trong báo cáo này.
+Không được ghi nhận sequential trace là hoàn thành cho tới khi có ZIP kết quả.
+```
+
+---
+
+# 34. Mô hình ordinary HVM method được cập nhật
+
+Đối với ordinary path, mô hình runtime hiện tại là:
+
+```text
+MethodDef token
+→ RID
+→ token-map entry @ [rbp + 0x3A8]
+→ rawDescriptor
+→ primaryOffset
+→ primary record
+→ recordD00 / recordD04
+→ recordDataOffset / streamOffset
+→ streamBase @ [rbp + 0x3B0]
+→ XOR key @ [rbp + 0x194]
+→ decoded selector
+→ selector payload + record-data region
+→ shared stream word-reader @ HVMRun64+0x377AAB
+→ HVM translator/compiler
+→ generated CLR IL
+→ HVM ICorJitInfo wrapper
+→ CoreCLR clrjit
+```
+
+Đây là chuỗi runtime đầy đủ nhất đã chứng minh tới thời điểm hiện tại.
+
+---
+
+# 35. Bảng trạng thái cập nhật
+
+```text
+A. Validation corpus                         990 / 990  COMPLETE
+B. Per-method manual capture                            STOPPED
+C. HVM runtime harvest                                 COMPLETE
+D. HVMRun64 PE/static mapping                          COMPLETE
+E. CoreCLR/.NET 8 runtime path                         COMPLETE
+F. Descriptor/token-map layout                         COMPLETE
+G. Secondary stream formula                            COMPLETE
+H. PayloadCursor formula                               COMPLETE
+I. RecordDataCursor formula                            COMPLETE
+J. Runtime table/global enumeration                    COMPLETE
+K. Cluster payload boundary                            VALIDATED
+L. Selector 0x01 grammar seed                          VALIDATED
+M. Shared VM stream consumer                           COMPLETE
+N. Sequential stream-read trace                        ACTIVE
+O. Generated IL JIT boundary                           COMPLETE
+P. JITInfo wrapper slot discovery                      COMPLETE
+Q. resolveToken entry/return capture                   COMPLETE
+R. Virtual token → runtime handle                      COMPLETE
+S. Runtime handle → metadata identity                  VALIDATION
+T. Generic runtime collector                           NEXT MAIN MILESTONE
+U. Module-wide corpus                                  pending
+V. Locals/EH/generic normalization                     pending
+W. Offline generic rebuild                             pending
+X. Final validation                                    pending
+```
+
+---
+
+# 36. Những phát hiện mới đã chứng minh chắc chắn
+
+```text
+13. Runtime có token-map global với ít nhất 64,728 entry non-zero trong session đã capture.
+14. rbp+0x3A8 là token-map pointer.
+15. rbp+0x3B0 là HVM stream-base pointer.
+16. rawDescriptor lookup dùng RID-1 và entry size 4 byte.
+17. payloadCursor = streamBase + streamOffset + 4.
+18. recordType = recordD00 & 0xFF.
+19. recordDataOffset = (recordD00 >> 8) & 0x00FFFFFF.
+20. selector stream và record-data stream đều có cấu trúc sau XOR key194.
+21. Adjacent offset boundary đã được xác minh bằng overlap cho cluster sáu method.
+22. selector 0x01 có grammar seed parse khép kín, nhưng grammar không dùng chung cho mọi selector.
+23. Sáu selector khác nhau đi qua cùng consumer HVMRun64+0x377AAB.
+24. HVMRun64+0x377AAB đọc DWORD theo [r15 + rax*4].
+25. Tại read-site, r13 không phải decoder pointer ổn định.
+26. r8d không phải selector register ổn định sau word đầu.
+27. Việc trace phải khóa theo payloadBase/stream identity, không chỉ theo selector register.
+```
+
+---
+
+# 37. Những gì vẫn chưa được phép tuyên bố
+
+Ngoài các giới hạn đã nêu trước đó, hiện chưa thể tuyên bố:
+
+```text
+Đã decode hoàn chỉnh VM opcode stream.
+Đã biết vai trò cuối cùng của mọi selector-stream và record-data field.
+Đã trace tuần tự toàn bộ payload của 0x060015E2.
+Đã xây được selector dispatch table hoàn chỉnh.
+Đã chuyển mọi HVM record thành CLR IL offline.
+Đã hoàn thành generic runtime collector.
+```
+
+Tuyên bố chính xác hiện tại:
+
+```text
+Đã xác định runtime-global descriptor, stream và payload formulas.
+Đã xác minh method chunk boundary trong một cluster runtime-observed.
+Đã tìm được shared VM stream word-reader.
+Đã xác định cách khóa target stream cần dùng cho sequential trace.
+
+Bước nghiên cứu hiện tại là hoàn tất sequential stream-read trace,
+sau đó hợp nhất kết quả với generated IL/JITInfo collector.
+```
+
+---
+
+# 38. Bước tiếp theo được cập nhật
+
+## Pha 1 — Hoàn tất sequential stream trace
+
+Chạy v1.5.5 với:
+
+```text
+selector        = 0x01
+targetFirstDword= 0x6A29635E
+payload lock    = r15
+```
+
+Điều kiện thành công:
+
+```text
+indexRax không chỉ bằng 0
+xuất hiện sequence hoặc pattern index lặp
+payloadDword và r14Before/r14After nối được theo event
+không memory access error
+không CDB syntax error
+```
+
+## Pha 2 — Xác định stream state machine
+
+Từ sequential trace:
+
+```text
+xác định cách cập nhật rax/esi
+xác định vai trò r14 trước/sau XOR
+xác định dispatch hoặc branch sau word decode
+đối chiếu selector 0x01 grammar với generated IL 46 byte
+```
+
+## Pha 3 — Hợp nhất vào generic runtime collector
+
+Không phát triển thành collector theo danh sách token.
+
+Collector chính thức cần thu đồng thời:
+
+```text
+compile_id
+method identity
+generated IL
+descriptor/selector/stream identity
+resolveToken callbacks
+runtime handles
+locals
+EH
+generic context
+```
+
+Stream trace chỉ là cơ chế validation để hiểu translator, không phải pipeline per-method cuối.
+
